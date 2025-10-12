@@ -24,12 +24,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.DropdownMenuItem
@@ -95,7 +92,8 @@ class MainActivity : ComponentActivity() {
 
     private val startMediaProjection = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
         if (it.resultCode == Activity.RESULT_OK) {
-            selectedProfile?.let { profile ->
+            selectedProfile?.let {
+                profile ->
                 val serviceIntent = Intent(this, AudioCaptureService::class.java).apply {
                     putExtra(AudioCaptureService.EXTRA_RESULT_CODE, it.resultCode)
                     putExtra(AudioCaptureService.EXTRA_DATA, it.data)
@@ -120,7 +118,7 @@ class MainActivity : ComponentActivity() {
             val sharedPrefs = getSharedPreferences("Settings", Context.MODE_PRIVATE)
             val theme = sharedPrefs.getString("THEME", "System") ?: "System"
 
-            CosmicCastTheme(darkTheme = when(theme) {
+            CosmicCastTheme(darkTheme = when (theme) {
                 "Light" -> false
                 "Dark" -> true
                 else -> isSystemInDarkTheme()
@@ -139,7 +137,9 @@ class MainActivity : ComponentActivity() {
                                 apply()
                             }
                         }, { profile -> selectedProfile = profile }) { startStopService() } }
-                        composable("settings") { SettingsScreen(navController, profiles) { newProfiles -> saveProfiles(newProfiles) } }
+                        composable("settings") { SettingsScreen(navController) }
+                        composable("profile_settings") { ProfileSettingsScreen(navController, profiles) { newProfiles -> saveProfiles(newProfiles) } }
+                        composable("app_settings") { AppSettingsScreen(navController, sharedPrefs) }
                     }
                 }
             }
@@ -260,9 +260,74 @@ fun MainScreen(
     }
 }
 
+@Composable
+fun SettingsScreen(navController: NavController) {
+    Column(
+        modifier = Modifier.fillMaxSize(),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Button(onClick = { navController.navigate("profile_settings") }) {
+            Text(text = "Manage Server Profiles")
+        }
+        Spacer(modifier = Modifier.height(16.dp))
+        Button(onClick = { navController.navigate("app_settings") }) {
+            Text(text = "App Settings")
+        }
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsScreen(
+fun AppSettingsScreen(navController: NavController, sharedPreferences: SharedPreferences) {
+    val themes = listOf("Light", "Dark", "System")
+    var expandedTheme by remember { mutableStateOf(false) }
+    var selectedTheme by remember { mutableStateOf(sharedPreferences.getString("THEME", "System") ?: "System") }
+    val context = LocalContext.current
+
+    Column(
+        modifier = Modifier.fillMaxSize().padding(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Box(modifier = Modifier.width(280.dp)) {
+            ExposedDropdownMenuBox(expanded = expandedTheme, onExpandedChange = { expandedTheme = !expandedTheme }) {
+                OutlinedTextField(
+                    value = selectedTheme,
+                    onValueChange = {},
+                    readOnly = true,
+                    label = { Text("Theme") },
+                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expandedTheme) },
+                    modifier = Modifier.menuAnchor()
+                )
+                ExposedDropdownMenu(expanded = expandedTheme, onDismissRequest = { expandedTheme = false }) {
+                    themes.forEach { theme ->
+                        DropdownMenuItem(
+                            text = { Text(theme) },
+                            onClick = {
+                                selectedTheme = theme
+                                expandedTheme = false
+                            }
+                        )
+                    }
+                }
+            }
+        }
+        Spacer(modifier = Modifier.height(16.dp))
+        Button(onClick = {
+            with(sharedPreferences.edit()) {
+                putString("THEME", selectedTheme)
+                apply()
+            }
+            (context as? MainActivity)?.recreate()
+        }) {
+            Text(text = "Save")
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ProfileSettingsScreen(
     navController: NavController,
     profiles: List<ServerProfile>,
     onSave: (List<ServerProfile>) -> Unit
@@ -272,14 +337,15 @@ fun SettingsScreen(
     Scaffold(
         floatingActionButton = {
             FloatingActionButton(onClick = {
-                editingProfiles = editingProfiles + ServerProfile("New Profile", "", 8888, 128000, 44100, "Mono")
+                val newProfileName = "New Profile ${editingProfiles.size + 1}"
+                editingProfiles = editingProfiles + ServerProfile(newProfileName, "", 8888, 128000, 44100, "Mono")
             }) {
                 Icon(Icons.Default.Add, contentDescription = "Add Profile")
             }
         }
     ) {
         LazyColumn(modifier = Modifier.padding(it)) {
-            items(editingProfiles) { profile ->
+            items(editingProfiles, key = { it.name }) { profile ->
                 ProfileEditor(profile, onProfileChange = { updatedProfile ->
                     editingProfiles = editingProfiles.map { p ->
                         if (p.name == profile.name) updatedProfile else p
