@@ -1,4 +1,3 @@
-
 package com.example.cosmiccast;
 
 import android.annotation.SuppressLint;
@@ -21,6 +20,8 @@ import android.os.Build;
 import android.os.IBinder;
 import android.util.Log;
 
+import androidx.localbroadcastmanager.content.LocalBroadcastManager;
+
 import java.io.IOException;
 import java.net.Socket;
 import java.nio.ByteBuffer;
@@ -29,6 +30,8 @@ public class AudioCaptureService extends Service {
 
     public static final String EXTRA_RESULT_CODE = "EXTRA_RESULT_CODE";
     public static final String EXTRA_DATA = "EXTRA_DATA";
+    public static final String ACTION_STATS = "com.example.cosmiccast.STATS";
+    public static final String EXTRA_STATS = "STATS";
     private static final String TAG = "AudioCaptureService";
     private static final String CHANNEL_ID = "AudioCaptureServiceChannel";
 
@@ -37,6 +40,9 @@ public class AudioCaptureService extends Service {
     private AudioRecord audioRecord;
     private MediaCodec mediaCodec;
     private Thread captureThread;
+    private String serverIp;
+    private int serverPort;
+    private int bitrate;
 
     @Override
     public void onCreate() {
@@ -61,6 +67,9 @@ public class AudioCaptureService extends Service {
 
         int resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, -1);
         Intent data = intent.getParcelableExtra(EXTRA_DATA);
+        serverIp = intent.getStringExtra("SERVER_IP");
+        serverPort = intent.getIntExtra("SERVER_PORT", 8888);
+        bitrate = intent.getIntExtra("BITRATE", 128000);
 
         mediaProjection = mediaProjectionManager.getMediaProjection(resultCode, data);
 
@@ -78,13 +87,12 @@ public class AudioCaptureService extends Service {
 
         AudioFormat audioFormat = new AudioFormat.Builder()
                 .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                .setSampleRate(Config.SAMPLE_RATE)
+                .setSampleRate(44100)
                 .setChannelMask(AudioFormat.CHANNEL_IN_MONO)
                 .build();
 
         audioRecord = new AudioRecord.Builder()
                 .setAudioFormat(audioFormat)
-                .setBufferSizeInBytes(2 * 1024)
                 .setAudioPlaybackCaptureConfig(config)
                 .build();
 
@@ -101,9 +109,9 @@ public class AudioCaptureService extends Service {
             MediaFormat format = new MediaFormat();
             format.setString(MediaFormat.KEY_MIME, "audio/mp4a-latm");
             format.setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC);
-            format.setInteger(MediaFormat.KEY_SAMPLE_RATE, Config.SAMPLE_RATE);
+            format.setInteger(MediaFormat.KEY_SAMPLE_RATE, 44100);
             format.setInteger(MediaFormat.KEY_CHANNEL_COUNT, 1);
-            format.setInteger(MediaFormat.KEY_BIT_RATE, Config.BITRATE);
+            format.setInteger(MediaFormat.KEY_BIT_RATE, bitrate);
             mediaCodec = MediaCodec.createEncoderByType("audio/mp4a-latm");
             mediaCodec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
         } catch (IOException e) {
@@ -127,8 +135,11 @@ public class AudioCaptureService extends Service {
     }
 
     private void encodeAndStreamAudio() {
-        try (Socket socket = new Socket(Config.SERVER_IP, Config.SERVER_PORT)) {
+        try (Socket socket = new Socket(serverIp, serverPort)) {
+            broadcastStats("Connected");
             MediaCodec.BufferInfo bufferInfo = new MediaCodec.BufferInfo();
+            long lastStatTime = System.currentTimeMillis();
+            long bytesSent = 0;
 
             while (!Thread.currentThread().isInterrupted()) {
                 int inputBufferIndex = mediaCodec.dequeueInputBuffer(-1);
@@ -153,6 +164,14 @@ public class AudioCaptureService extends Service {
                     outputBuffer.get(outData, 7, outPacketSize);
 
                     socket.getOutputStream().write(outData);
+                    bytesSent += outPacketSizeWithHeader;
+
+                    if (System.currentTimeMillis() - lastStatTime > 1000) {
+                        long bps = (bytesSent * 8) / ((System.currentTimeMillis() - lastStatTime) / 1000);
+                        broadcastStats("Connected\n" + bps / 1000 + " kbps");
+                        lastStatTime = System.currentTimeMillis();
+                        bytesSent = 0;
+                    }
 
                     mediaCodec.releaseOutputBuffer(outputBufferIndex, false);
                     outputBufferIndex = mediaCodec.dequeueOutputBuffer(bufferInfo, 0);
@@ -160,7 +179,14 @@ public class AudioCaptureService extends Service {
             }
         } catch (IOException e) {
             Log.e(TAG, "Error while streaming audio", e);
+            broadcastStats("Error: " + e.getMessage());
         }
+    }
+
+    private void broadcastStats(String stats) {
+        Intent intent = new Intent(ACTION_STATS);
+        intent.putExtra(EXTRA_STATS, stats);
+        LocalBroadcastManager.getInstance(this).sendBroadcast(intent);
     }
 
     @Override
