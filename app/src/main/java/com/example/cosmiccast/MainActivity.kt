@@ -19,6 +19,8 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -26,6 +28,7 @@ import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -49,10 +52,12 @@ class MainActivity : ComponentActivity() {
 
     private var isServiceRunning by mutableStateOf(false)
     private var stats by mutableStateOf("Not Connected")
+    private var streamVolume by mutableStateOf(1.0f)
 
     private val statsReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             stats = intent?.getStringExtra(AudioCaptureService.EXTRA_STATS) ?: ""
+            isServiceRunning = AudioCaptureService.isRunning
         }
     }
 
@@ -67,6 +72,9 @@ class MainActivity : ComponentActivity() {
                 putExtra("SERVER_IP", sharedPrefs.getString("SERVER_IP", "192.168.1.100"))
                 putExtra("SERVER_PORT", sharedPrefs.getInt("SERVER_PORT", 8888))
                 putExtra("BITRATE", sharedPrefs.getInt("BITRATE", 128000))
+                putExtra("SAMPLE_RATE", sharedPrefs.getInt("SAMPLE_RATE", 44100))
+                putExtra("CHANNEL_CONFIG", sharedPrefs.getString("CHANNEL_CONFIG", "Mono"))
+                putExtra(AudioCaptureService.EXTRA_VOLUME, streamVolume)
             }
             startForegroundService(serviceIntent)
             isServiceRunning = true
@@ -75,9 +83,13 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        val sharedPrefs = getSharedPreferences("Settings", Context.MODE_PRIVATE)
+        streamVolume = sharedPrefs.getFloat("STREAM_VOLUME", 1.0f)
+        isServiceRunning = AudioCaptureService.isRunning
+
         setContent {
-            val sharedPrefs = getSharedPreferences("Settings", Context.MODE_PRIVATE)
             val theme = sharedPrefs.getString("THEME", "System") ?: "System"
+
             CosmicCastTheme(darkTheme = when(theme) {
                 "Light" -> false
                 "Dark" -> true
@@ -85,8 +97,19 @@ class MainActivity : ComponentActivity() {
             }) {
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
                     val navController = rememberNavController()
+                    val context = LocalContext.current
                     NavHost(navController = navController, startDestination = "main") {
-                        composable("main") { MainScreen(navController, isServiceRunning, stats) { startStopService() } }
+                        composable("main") { MainScreen(navController, isServiceRunning, stats, streamVolume, {
+                            newVolume ->
+                            streamVolume = newVolume
+                            val intent = Intent(AudioCaptureService.ACTION_SET_VOLUME)
+                            intent.putExtra(AudioCaptureService.EXTRA_VOLUME, newVolume)
+                            LocalBroadcastManager.getInstance(context).sendBroadcast(intent)
+                            with(sharedPrefs.edit()) {
+                                putFloat("STREAM_VOLUME", newVolume)
+                                apply()
+                            }
+                        }) { startStopService() } }
                         composable("settings") { SettingsScreen(navController, sharedPrefs) }
                     }
                 }
@@ -96,6 +119,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        isServiceRunning = AudioCaptureService.isRunning
         LocalBroadcastManager.getInstance(this).registerReceiver(statsReceiver, IntentFilter(AudioCaptureService.ACTION_STATS))
     }
 
@@ -116,7 +140,14 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun MainScreen(navController: NavController, isServiceRunning: Boolean, stats: String, onStartStopClick: () -> Unit) {
+fun MainScreen(
+    navController: NavController,
+    isServiceRunning: Boolean,
+    stats: String,
+    currentVolume: Float,
+    onVolumeChange: (Float) -> Unit,
+    onStartStopClick: () -> Unit
+) {
     Column(
         modifier = Modifier.fillMaxSize(),
         verticalArrangement = Arrangement.Center,
@@ -131,6 +162,14 @@ fun MainScreen(navController: NavController, isServiceRunning: Boolean, stats: S
         Button(onClick = { navController.navigate("settings") }) {
             Text(text = "Settings")
         }
+        Spacer(modifier = Modifier.height(32.dp))
+        Text(text = "Volume")
+        Slider(
+            value = currentVolume,
+            onValueChange = { onVolumeChange(it) },
+            valueRange = 0f..1f,
+            modifier = Modifier.width(280.dp)
+        )
     }
 }
 
@@ -144,6 +183,14 @@ fun SettingsScreen(navController: NavController, sharedPreferences: SharedPrefer
     var expandedBitrate by remember { mutableStateOf(false) }
     var selectedBitrate by remember { mutableStateOf(sharedPreferences.getInt("BITRATE", 128000)) }
 
+    val sampleRates = listOf(22050, 44100, 48000)
+    var expandedSampleRate by remember { mutableStateOf(false) }
+    var selectedSampleRate by remember { mutableStateOf(sharedPreferences.getInt("SAMPLE_RATE", 44100)) }
+
+    val channelConfigs = listOf("Mono", "Stereo")
+    var expandedChannelConfig by remember { mutableStateOf(false) }
+    var selectedChannelConfig by remember { mutableStateOf(sharedPreferences.getString("CHANNEL_CONFIG", "Mono") ?: "Mono") }
+
     val themes = listOf("Light", "Dark", "System")
     var expandedTheme by remember { mutableStateOf(false) }
     var selectedTheme by remember { mutableStateOf(sharedPreferences.getString("THEME", "System") ?: "System") }
@@ -151,7 +198,9 @@ fun SettingsScreen(navController: NavController, sharedPreferences: SharedPrefer
     val context = LocalContext.current
 
     Column(
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
@@ -177,6 +226,58 @@ fun SettingsScreen(navController: NavController, sharedPreferences: SharedPrefer
                             onClick = {
                                 selectedBitrate = bitrate
                                 expandedBitrate = false
+                            }
+                        )
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        Box(modifier = Modifier.width(280.dp)) {
+            ExposedDropdownMenuBox(expanded = expandedSampleRate, onExpandedChange = { expandedSampleRate = !expandedSampleRate }) {
+                OutlinedTextField(
+                    value = "$selectedSampleRate Hz",
+                    onValueChange = {},
+                    readOnly = true,
+                    label = { Text("Sample Rate") },
+                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expandedSampleRate) },
+                    modifier = Modifier.menuAnchor()
+                )
+                ExposedDropdownMenu(expanded = expandedSampleRate, onDismissRequest = { expandedSampleRate = false }) {
+                    sampleRates.forEach { sampleRate ->
+                        DropdownMenuItem(
+                            text = { Text("$sampleRate Hz") },
+                            onClick = {
+                                selectedSampleRate = sampleRate
+                                expandedSampleRate = false
+                            }
+                        )
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        Box(modifier = Modifier.width(280.dp)) {
+            ExposedDropdownMenuBox(expanded = expandedChannelConfig, onExpandedChange = { expandedChannelConfig = !expandedChannelConfig }) {
+                OutlinedTextField(
+                    value = selectedChannelConfig,
+                    onValueChange = {},
+                    readOnly = true,
+                    label = { Text("Channels") },
+                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expandedChannelConfig) },
+                    modifier = Modifier.menuAnchor()
+                )
+                ExposedDropdownMenu(expanded = expandedChannelConfig, onDismissRequest = { expandedChannelConfig = false }) {
+                    channelConfigs.forEach { channelConfig ->
+                        DropdownMenuItem(
+                            text = { Text(channelConfig) },
+                            onClick = {
+                                selectedChannelConfig = channelConfig
+                                expandedChannelConfig = false
                             }
                         )
                     }
@@ -217,6 +318,8 @@ fun SettingsScreen(navController: NavController, sharedPreferences: SharedPrefer
                 putString("SERVER_IP", ipAddress)
                 putInt("SERVER_PORT", port.toInt())
                 putInt("BITRATE", selectedBitrate)
+                putInt("SAMPLE_RATE", selectedSampleRate)
+                putString("CHANNEL_CONFIG", selectedChannelConfig)
                 putString("THEME", selectedTheme)
                 apply()
             }

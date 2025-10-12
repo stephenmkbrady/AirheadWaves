@@ -5,7 +5,10 @@ import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.Service;
+import android.content.BroadcastReceiver;
+import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.pm.ServiceInfo;
 import android.media.AudioAttributes;
 import android.media.AudioFormat;
@@ -25,6 +28,7 @@ import androidx.localbroadcastmanager.content.LocalBroadcastManager;
 import java.io.IOException;
 import java.net.Socket;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 
 public class AudioCaptureService extends Service {
 
@@ -32,8 +36,12 @@ public class AudioCaptureService extends Service {
     public static final String EXTRA_DATA = "EXTRA_DATA";
     public static final String ACTION_STATS = "com.example.cosmiccast.STATS";
     public static final String EXTRA_STATS = "STATS";
+    public static final String ACTION_SET_VOLUME = "com.example.cosmiccast.SET_VOLUME";
+    public static final String EXTRA_VOLUME = "VOLUME";
     private static final String TAG = "AudioCaptureService";
     private static final String CHANNEL_ID = "AudioCaptureServiceChannel";
+
+    public static boolean isRunning = false;
 
     private MediaProjectionManager mediaProjectionManager;
     private MediaProjection mediaProjection;
@@ -43,12 +51,26 @@ public class AudioCaptureService extends Service {
     private String serverIp;
     private int serverPort;
     private int bitrate;
+    private int sampleRate;
+    private String channelConfig;
+    private float streamVolume = 1.0f;
+
+    private final BroadcastReceiver volumeReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            if (ACTION_SET_VOLUME.equals(intent.getAction())) {
+                streamVolume = intent.getFloatExtra(EXTRA_VOLUME, 1.0f);
+            }
+        }
+    };
 
     @Override
     public void onCreate() {
         super.onCreate();
+        isRunning = true;
         mediaProjectionManager = (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
         createNotificationChannel();
+        LocalBroadcastManager.getInstance(this).registerReceiver(volumeReceiver, new IntentFilter(ACTION_SET_VOLUME));
     }
 
     @SuppressLint("MissingPermission")
@@ -70,6 +92,9 @@ public class AudioCaptureService extends Service {
         serverIp = intent.getStringExtra("SERVER_IP");
         serverPort = intent.getIntExtra("SERVER_PORT", 8888);
         bitrate = intent.getIntExtra("BITRATE", 128000);
+        sampleRate = intent.getIntExtra("SAMPLE_RATE", 44100);
+        channelConfig = intent.getStringExtra("CHANNEL_CONFIG");
+        streamVolume = intent.getFloatExtra(EXTRA_VOLUME, 1.0f);
 
         mediaProjection = mediaProjectionManager.getMediaProjection(resultCode, data);
 
@@ -87,8 +112,8 @@ public class AudioCaptureService extends Service {
 
         AudioFormat audioFormat = new AudioFormat.Builder()
                 .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                .setSampleRate(44100)
-                .setChannelMask(AudioFormat.CHANNEL_IN_MONO)
+                .setSampleRate(sampleRate)
+                .setChannelMask("Stereo".equals(channelConfig) ? AudioFormat.CHANNEL_IN_STEREO : AudioFormat.CHANNEL_IN_MONO)
                 .build();
 
         audioRecord = new AudioRecord.Builder()
@@ -109,8 +134,8 @@ public class AudioCaptureService extends Service {
             MediaFormat format = new MediaFormat();
             format.setString(MediaFormat.KEY_MIME, "audio/mp4a-latm");
             format.setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC);
-            format.setInteger(MediaFormat.KEY_SAMPLE_RATE, 44100);
-            format.setInteger(MediaFormat.KEY_CHANNEL_COUNT, 1);
+            format.setInteger(MediaFormat.KEY_SAMPLE_RATE, sampleRate);
+            format.setInteger(MediaFormat.KEY_CHANNEL_COUNT, "Stereo".equals(channelConfig) ? 2 : 1);
             format.setInteger(MediaFormat.KEY_BIT_RATE, bitrate);
             mediaCodec = MediaCodec.createEncoderByType("audio/mp4a-latm");
             mediaCodec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
@@ -121,8 +146,8 @@ public class AudioCaptureService extends Service {
 
     private void addAdtsHeader(byte[] packet, int packetLen) {
         int profile = 2;  //AAC LC
-        int freqIdx = 4;  //44.1KHz
-        int chanCfg = 1;  //Mono
+        int freqIdx = getFreqIndex(sampleRate);
+        int chanCfg = "Stereo".equals(channelConfig) ? 2 : 1;
 
         // fill in ADTS data
         packet[0] = (byte) 0xFF;
@@ -132,6 +157,30 @@ public class AudioCaptureService extends Service {
         packet[4] = (byte) ((packetLen & 0x7FF) >> 3);
         packet[5] = (byte) (((packetLen & 7) << 5) + 0x1F);
         packet[6] = (byte) 0xFC;
+    }
+
+    private int getFreqIndex(int sampleRate) {
+        switch (sampleRate) {
+            case 22050:
+                return 7;
+            case 44100:
+                return 4;
+            case 48000:
+                return 3;
+            default:
+                return 4;
+        }
+    }
+
+    private void applyVolume(ByteBuffer buffer, int bytes) {
+        float scaledVolume = streamVolume * streamVolume * streamVolume;
+
+        buffer.order(ByteOrder.LITTLE_ENDIAN);
+        for (int i = 0; i < bytes / 2; i++) {
+            short sample = buffer.getShort(i * 2);
+            sample = (short) (sample * scaledVolume);
+            buffer.putShort(i * 2, sample);
+        }
     }
 
     private void encodeAndStreamAudio() {
@@ -148,6 +197,7 @@ public class AudioCaptureService extends Service {
                     inputBuffer.clear();
                     int read = audioRecord.read(inputBuffer, 2 * 1024);
                     if (read > 0) {
+                        applyVolume(inputBuffer, read);
                         mediaCodec.queueInputBuffer(inputBufferIndex, 0, read, 0, 0);
                     }
                 }
@@ -192,6 +242,8 @@ public class AudioCaptureService extends Service {
     @Override
     public void onDestroy() {
         super.onDestroy();
+        isRunning = false;
+        LocalBroadcastManager.getInstance(this).unregisterReceiver(volumeReceiver);
         if (captureThread != null) {
             captureThread.interrupt();
         }
