@@ -62,9 +62,11 @@ import com.example.cosmiccast.ui.theme.CosmicCastTheme
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import java.util.UUID
 
 @Serializable
 data class ServerProfile(
+    val id: String = UUID.randomUUID().toString(),
     val name: String,
     val ipAddress: String,
     val port: Int,
@@ -151,10 +153,16 @@ class MainActivity : ComponentActivity() {
         streamVolume = sharedPrefs.getFloat("STREAM_VOLUME", 1.0f)
         val profilesJson = sharedPrefs.getString("PROFILES", null)
         if (profilesJson != null) {
-            profiles = Json.decodeFromString(profilesJson)
-            selectedProfile = profiles.firstOrNull()
+            try {
+                profiles = Json.decodeFromString(profilesJson)
+                selectedProfile = profiles.firstOrNull()
+            } catch (e: Exception) {
+                profiles = listOf(ServerProfile(name = "Default", ipAddress = "192.168.1.100", port = 8888, bitrate = 128000, sampleRate = 44100, channelConfig = "Mono"))
+                selectedProfile = profiles.first()
+                saveProfiles(profiles)
+            }
         } else {
-            profiles = listOf(ServerProfile("Default", "192.168.1.100", 8888, 128000, 44100, "Mono"))
+            profiles = listOf(ServerProfile(name = "Default", ipAddress = "192.168.1.100", port = 8888, bitrate = 128000, sampleRate = 44100, channelConfig = "Mono"))
             selectedProfile = profiles.first()
         }
     }
@@ -338,20 +346,20 @@ fun ProfileSettingsScreen(
         floatingActionButton = {
             FloatingActionButton(onClick = {
                 val newProfileName = "New Profile ${editingProfiles.size + 1}"
-                editingProfiles = editingProfiles + ServerProfile(newProfileName, "", 8888, 128000, 44100, "Mono")
+                editingProfiles = editingProfiles + ServerProfile(name = newProfileName, ipAddress = "", port = 8888, bitrate = 128000, sampleRate = 44100, channelConfig = "Mono")
             }) {
                 Icon(Icons.Default.Add, contentDescription = "Add Profile")
             }
         }
     ) {
         LazyColumn(modifier = Modifier.padding(it)) {
-            items(editingProfiles, key = { it.name }) { profile ->
+            items(editingProfiles, key = { it.id }) { profile ->
                 ProfileEditor(profile, onProfileChange = { updatedProfile ->
                     editingProfiles = editingProfiles.map { p ->
-                        if (p.name == profile.name) updatedProfile else p
+                        if (p.id == profile.id) updatedProfile else p
                     }
                 }, onDelete = {
-                    editingProfiles = editingProfiles.filter { p -> p.name != profile.name }
+                    editingProfiles = editingProfiles.filter { p -> p.id != profile.id }
                 })
             }
         }
@@ -379,7 +387,7 @@ fun ProfileEditor(
     var channelConfig by remember { mutableStateOf(profile.channelConfig) }
 
     LaunchedEffect(name, ipAddress, port, bitrate, sampleRate, channelConfig) {
-        onProfileChange(ServerProfile(name, ipAddress, port.toIntOrNull() ?: 8888, bitrate, sampleRate, channelConfig))
+        onProfileChange(profile.copy(name = name, ipAddress = ipAddress, port = port.toIntOrNull() ?: 8888, bitrate = bitrate, sampleRate = sampleRate, channelConfig = channelConfig))
     }
 
     Card(modifier = Modifier.padding(16.dp)) {
