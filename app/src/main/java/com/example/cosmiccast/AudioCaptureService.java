@@ -38,6 +38,10 @@ public class AudioCaptureService extends Service {
     public static final String EXTRA_STATS = "STATS";
     public static final String ACTION_SET_VOLUME = "com.example.cosmiccast.SET_VOLUME";
     public static final String EXTRA_VOLUME = "VOLUME";
+    public static final String ACTION_AUDIO_LEVEL = "com.example.cosmiccast.AUDIO_LEVEL";
+    public static final String EXTRA_AUDIO_LEVEL = "AUDIO_LEVEL";
+    public static final String ACTION_UPDATE_TONE_CONTROLS = "com.example.cosmiccast.UPDATE_TONE_CONTROLS";
+
     private static final String TAG = "AudioCaptureService";
     private static final String CHANNEL_ID = "AudioCaptureServiceChannel";
 
@@ -54,12 +58,22 @@ public class AudioCaptureService extends Service {
     private int sampleRate;
     private String channelConfig;
     private float streamVolume = 1.0f;
+    private float bass = 0f;
+    private float treble = 0f;
 
-    private final BroadcastReceiver volumeReceiver = new BroadcastReceiver() {
+    private BiquadFilter bassFilter;
+    private BiquadFilter trebleFilter;
+
+
+    private final BroadcastReceiver settingsReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
             if (ACTION_SET_VOLUME.equals(intent.getAction())) {
                 streamVolume = intent.getFloatExtra(EXTRA_VOLUME, 1.0f);
+            } else if (ACTION_UPDATE_TONE_CONTROLS.equals(intent.getAction())) {
+                bass = intent.getFloatExtra("BASS", 0f);
+                treble = intent.getFloatExtra("TREBLE", 0f);
+                updateFilters();
             }
         }
     };
@@ -70,7 +84,10 @@ public class AudioCaptureService extends Service {
         isRunning = true;
         mediaProjectionManager = (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
         createNotificationChannel();
-        LocalBroadcastManager.getInstance(this).registerReceiver(volumeReceiver, new IntentFilter(ACTION_SET_VOLUME));
+        IntentFilter filter = new IntentFilter();
+        filter.addAction(ACTION_SET_VOLUME);
+        filter.addAction(ACTION_UPDATE_TONE_CONTROLS);
+        LocalBroadcastManager.getInstance(this).registerReceiver(settingsReceiver, filter);
     }
 
     @SuppressLint("MissingPermission")
@@ -95,6 +112,8 @@ public class AudioCaptureService extends Service {
         sampleRate = intent.getIntExtra("SAMPLE_RATE", 44100);
         channelConfig = intent.getStringExtra("CHANNEL_CONFIG");
         streamVolume = intent.getFloatExtra(EXTRA_VOLUME, 1.0f);
+        bass = intent.getFloatExtra("BASS", 0f);
+        treble = intent.getFloatExtra("TREBLE", 0f);
 
         mediaProjection = mediaProjectionManager.getMediaProjection(resultCode, data);
 
@@ -122,6 +141,7 @@ public class AudioCaptureService extends Service {
                 .build();
 
         setupMediaCodec();
+        setupFilters();
         mediaCodec.start();
         audioRecord.startRecording();
 
@@ -144,12 +164,22 @@ public class AudioCaptureService extends Service {
         }
     }
 
+    private void setupFilters() {
+        bassFilter = new BiquadFilter(sampleRate);
+        trebleFilter = new BiquadFilter(sampleRate);
+        updateFilters();
+    }
+
+    private void updateFilters() {
+        bassFilter.setLowShelf(bass, 200f);
+        trebleFilter.setHighShelf(treble, 3000f);
+    }
+
     private void addAdtsHeader(byte[] packet, int packetLen) {
         int profile = 2;  //AAC LC
         int freqIdx = getFreqIndex(sampleRate);
         int chanCfg = "Stereo".equals(channelConfig) ? 2 : 1;
 
-        // fill in ADTS data
         packet[0] = (byte) 0xFF;
         packet[1] = (byte) 0xF1;
         packet[2] = (byte) (((profile - 1) << 6) + (freqIdx << 2) + (chanCfg >> 2));
@@ -172,15 +202,42 @@ public class AudioCaptureService extends Service {
         }
     }
 
-    private void applyVolume(ByteBuffer buffer, int bytes) {
+    private void applyAudioEffects(ByteBuffer buffer, int bytes) {
         float scaledVolume = streamVolume * streamVolume * streamVolume;
-
         buffer.order(ByteOrder.LITTLE_ENDIAN);
-        for (int i = 0; i < bytes / 2; i++) {
-            short sample = buffer.getShort(i * 2);
-            sample = (short) (sample * scaledVolume);
-            buffer.putShort(i * 2, sample);
+        int numSamples = bytes / 2;
+
+        for (int i = 0; i < numSamples; i++) {
+            short pcmSample = buffer.getShort(i * 2);
+            float sample = pcmSample / 32767f;
+
+            sample = bassFilter.process(sample);
+            sample = trebleFilter.process(sample);
+
+            sample *= scaledVolume;
+            
+            sample = Math.max(-1.0f, Math.min(1.0f, sample));
+
+            buffer.putShort(i * 2, (short) (sample * 32767f));
         }
+    }
+
+    private void calculateAndBroadcastAudioLevel(ByteBuffer buffer, int bytesRead) {
+        long sumOfSquares = 0;
+        buffer.order(ByteOrder.LITTLE_ENDIAN);
+        int numSamples = bytesRead / 2;
+
+        for (int i = 0; i < numSamples; i++) {
+            short sample = buffer.getShort(i * 2);
+            sumOfSquares += sample * sample;
+        }
+
+        double rms = Math.sqrt((double) sumOfSquares / numSamples);
+        float normalizedRms = (float) (rms / 32767.0);
+
+        Intent intent = new Intent(ACTION_AUDIO_LEVEL);
+        intent.putExtra(EXTRA_AUDIO_LEVEL, normalizedRms);
+        LocalBroadcastManager.getInstance(this).sendBroadcast(intent);
     }
 
     private void encodeAndStreamAudio() {
@@ -197,7 +254,8 @@ public class AudioCaptureService extends Service {
                     inputBuffer.clear();
                     int read = audioRecord.read(inputBuffer, 2 * 1024);
                     if (read > 0) {
-                        applyVolume(inputBuffer, read);
+                        calculateAndBroadcastAudioLevel(inputBuffer, read);
+                        applyAudioEffects(inputBuffer, read);
                         mediaCodec.queueInputBuffer(inputBufferIndex, 0, read, 0, 0);
                     }
                 }
@@ -243,7 +301,7 @@ public class AudioCaptureService extends Service {
     public void onDestroy() {
         super.onDestroy();
         isRunning = false;
-        LocalBroadcastManager.getInstance(this).unregisterReceiver(volumeReceiver);
+        LocalBroadcastManager.getInstance(this).unregisterReceiver(settingsReceiver);
         if (captureThread != null) {
             captureThread.interrupt();
         }
@@ -258,6 +316,7 @@ public class AudioCaptureService extends Service {
         if (mediaProjection != null) {
             mediaProjection.stop();
         }
+        broadcastStats("Not Connected");
     }
 
     private void createNotificationChannel() {
@@ -273,5 +332,76 @@ public class AudioCaptureService extends Service {
     @Override
     public IBinder onBind(Intent intent) {
         return null;
+    }
+
+
+    class BiquadFilter {
+        private float a1, a2, b0, b1, b2;
+        private float x1, x2, y1, y2;
+        private final int sampleRate;
+
+        public BiquadFilter(int sampleRate) {
+            this.sampleRate = sampleRate;
+            b0 = 1.0f;
+            b1 = 0.0f;
+            b2 = 0.0f;
+            a1 = 0.0f;
+            a2 = 0.0f;
+            x1 = 0.0f;
+            x2 = 0.0f;
+            y1 = 0.0f;
+            y2 = 0.0f;
+        }
+
+        public void setLowShelf(float gainDb, float centerFreq) {
+            float q = 0.707f;
+            float A = (float) Math.pow(10, gainDb / 40.0);
+            float w0 = (float) (2.0 * Math.PI * centerFreq / this.sampleRate);
+            float cos_w0 = (float) Math.cos(w0);
+            float alpha = (float) (Math.sin(w0) / (2.0f * q));
+
+            float a0_ = (A + 1) + (A - 1) * cos_w0 + 2 * (float)Math.sqrt(A) * alpha;
+            this.a1 = -2 * ((A - 1) + (A + 1) * cos_w0);
+            this.a2 = (A + 1) + (A - 1) * cos_w0 - 2 * (float)Math.sqrt(A) * alpha;
+            this.b0 = A * ((A + 1) - (A - 1) * cos_w0 + 2 * (float)Math.sqrt(A) * alpha);
+            this.b1 = 2 * A * ((A - 1) - (A + 1) * cos_w0);
+            this.b2 = A * ((A + 1) - (A - 1) * cos_w0 - 2 * (float)Math.sqrt(A) * alpha);
+
+            this.a1 /= a0_;
+            this.a2 /= a0_;
+            this.b0 /= a0_;
+            this.b1 /= a0_;
+            this.b2 /= a0_;
+        }
+
+        public void setHighShelf(float gainDb, float centerFreq) {
+            float q = 0.707f;
+            float A = (float) Math.pow(10, gainDb / 40.0);
+            float w0 = (float) (2.0 * Math.PI * centerFreq / this.sampleRate);
+            float cos_w0 = (float) Math.cos(w0);
+            float alpha = (float) (Math.sin(w0) / (2.0f * q));
+
+            float a0_ = (A + 1) - (A - 1) * cos_w0 + 2 * (float)Math.sqrt(A) * alpha;
+            this.a1 = 2 * ((A - 1) - (A + 1) * cos_w0);
+            this.a2 = (A + 1) - (A - 1) * cos_w0 - 2 * (float)Math.sqrt(A) * alpha;
+            this.b0 = A * ((A + 1) + (A - 1) * cos_w0 + 2 * (float)Math.sqrt(A) * alpha);
+            this.b1 = -2 * A * ((A - 1) + (A + 1) * cos_w0);
+            this.b2 = A * ((A + 1) + (A - 1) * cos_w0 - 2 * (float)Math.sqrt(A) * alpha);
+
+            this.a1 /= a0_;
+            this.a2 /= a0_;
+            this.b0 /= a0_;
+            this.b1 /= a0_;
+            this.b2 /= a0_;
+        }
+
+        public float process(float in) {
+            float out = b0 * in + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
+            x2 = x1;
+            x1 = in;
+            y2 = y1;
+            y1 = out;
+            return out;
+        }
     }
 }

@@ -11,6 +11,8 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -51,6 +53,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
@@ -72,7 +75,9 @@ data class ServerProfile(
     val port: Int,
     val bitrate: Int,
     val sampleRate: Int,
-    val channelConfig: String
+    val channelConfig: String,
+    val bass: Float = 0f,
+    val treble: Float = 0f
 )
 
 class MainActivity : ComponentActivity() {
@@ -80,13 +85,18 @@ class MainActivity : ComponentActivity() {
     private var isServiceRunning by mutableStateOf(false)
     private var stats by mutableStateOf("Not Connected")
     private var streamVolume by mutableStateOf(1.0f)
+    private var audioLevel by mutableStateOf(0.0f)
     private var profiles by mutableStateOf<List<ServerProfile>>(emptyList())
     private var selectedProfile by mutableStateOf<ServerProfile?>(null)
 
     private val statsReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            stats = intent?.getStringExtra(AudioCaptureService.EXTRA_STATS) ?: ""
-            isServiceRunning = AudioCaptureService.isRunning
+            if (intent?.action == AudioCaptureService.ACTION_STATS) {
+                stats = intent.getStringExtra(AudioCaptureService.EXTRA_STATS) ?: ""
+                isServiceRunning = AudioCaptureService.isRunning
+            } else if (intent?.action == AudioCaptureService.ACTION_AUDIO_LEVEL) {
+                audioLevel = intent.getFloatExtra(AudioCaptureService.EXTRA_AUDIO_LEVEL, 0.0f)
+            }
         }
     }
 
@@ -104,6 +114,8 @@ class MainActivity : ComponentActivity() {
                     putExtra("BITRATE", profile.bitrate)
                     putExtra("SAMPLE_RATE", profile.sampleRate)
                     putExtra("CHANNEL_CONFIG", profile.channelConfig)
+                    putExtra("BASS", profile.bass)
+                    putExtra("TREBLE", profile.treble)
                     putExtra(AudioCaptureService.EXTRA_VOLUME, streamVolume)
                 }
                 startForegroundService(serviceIntent)
@@ -119,13 +131,23 @@ class MainActivity : ComponentActivity() {
         setContent {
             val sharedPrefs = getSharedPreferences("Settings", Context.MODE_PRIVATE)
             val theme = sharedPrefs.getString("THEME", "System") ?: "System"
-
-            CosmicCastTheme(darkTheme = when (theme) {
+            val isDarkTheme = when (theme) {
                 "Light" -> false
                 "Dark" -> true
                 else -> isSystemInDarkTheme()
-            }) {
-                Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+            }
+
+            CosmicCastTheme(darkTheme = isDarkTheme) {
+                val animatedColor by animateColorAsState(
+                    targetValue = if (isServiceRunning) {
+                        lerp(MaterialTheme.colorScheme.background, MaterialTheme.colorScheme.primary, audioLevel)
+                    } else {
+                        MaterialTheme.colorScheme.background
+                    },
+                    animationSpec = tween(durationMillis = 100)
+                )
+
+                Surface(modifier = Modifier.fillMaxSize(), color = animatedColor) {
                     val navController = rememberNavController()
                     NavHost(navController = navController, startDestination = "main") {
                         composable("main") { MainScreen(navController, isServiceRunning, stats, streamVolume, profiles, selectedProfile, {
@@ -140,7 +162,7 @@ class MainActivity : ComponentActivity() {
                             }
                         }, { profile -> selectedProfile = profile }) { startStopService() } }
                         composable("settings") { SettingsScreen(navController) }
-                        composable("profile_settings") { ProfileSettingsScreen(navController, profiles) { newProfiles -> saveProfiles(newProfiles) } }
+                        composable("profile_settings") { ProfileSettingsScreen(navController, profiles, selectedProfile?.id) { newProfiles -> saveProfiles(newProfiles) } }
                         composable("app_settings") { AppSettingsScreen(navController, sharedPrefs) }
                     }
                 }
@@ -157,14 +179,17 @@ class MainActivity : ComponentActivity() {
                 profiles = Json.decodeFromString(profilesJson)
                 selectedProfile = profiles.firstOrNull()
             } catch (e: Exception) {
-                profiles = listOf(ServerProfile(name = "Default", ipAddress = "192.168.1.100", port = 8888, bitrate = 128000, sampleRate = 44100, channelConfig = "Mono"))
-                selectedProfile = profiles.first()
+                createDefaultProfile()
                 saveProfiles(profiles)
             }
         } else {
-            profiles = listOf(ServerProfile(name = "Default", ipAddress = "192.168.1.100", port = 8888, bitrate = 128000, sampleRate = 44100, channelConfig = "Mono"))
-            selectedProfile = profiles.first()
+            createDefaultProfile()
         }
+    }
+
+    private fun createDefaultProfile() {
+        profiles = listOf(ServerProfile(name = "Default", ipAddress = "192.168.1.100", port = 8888, bitrate = 128000, sampleRate = 44100, channelConfig = "Mono"))
+        selectedProfile = profiles.first()
     }
 
     private fun saveProfiles(newProfiles: List<ServerProfile>) {
@@ -180,7 +205,10 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         isServiceRunning = AudioCaptureService.isRunning
-        LocalBroadcastManager.getInstance(this).registerReceiver(statsReceiver, IntentFilter(AudioCaptureService.ACTION_STATS))
+        val intentFilter = IntentFilter()
+        intentFilter.addAction(AudioCaptureService.ACTION_STATS)
+        intentFilter.addAction(AudioCaptureService.ACTION_AUDIO_LEVEL)
+        LocalBroadcastManager.getInstance(this).registerReceiver(statsReceiver, intentFilter)
     }
 
     override fun onPause() {
@@ -338,9 +366,11 @@ fun AppSettingsScreen(navController: NavController, sharedPreferences: SharedPre
 fun ProfileSettingsScreen(
     navController: NavController,
     profiles: List<ServerProfile>,
+    currentProfileId: String?,
     onSave: (List<ServerProfile>) -> Unit
 ) {
     var editingProfiles by remember { mutableStateOf(profiles) }
+    val context = LocalContext.current
 
     Scaffold(
         floatingActionButton = {
@@ -354,9 +384,15 @@ fun ProfileSettingsScreen(
     ) {
         LazyColumn(modifier = Modifier.padding(it)) {
             items(editingProfiles, key = { it.id }) { profile ->
-                ProfileEditor(profile, onProfileChange = { updatedProfile ->
+                ProfileEditor(profile, profile.id == currentProfileId, onProfileChange = { updatedProfile ->
                     editingProfiles = editingProfiles.map { p ->
                         if (p.id == profile.id) updatedProfile else p
+                    }
+                    if(profile.id == currentProfileId) {
+                        val intent = Intent(AudioCaptureService.ACTION_UPDATE_TONE_CONTROLS)
+                        intent.putExtra("BASS", updatedProfile.bass)
+                        intent.putExtra("TREBLE", updatedProfile.treble)
+                        LocalBroadcastManager.getInstance(context).sendBroadcast(intent)
                     }
                 }, onDelete = {
                     editingProfiles = editingProfiles.filter { p -> p.id != profile.id }
@@ -376,6 +412,7 @@ fun ProfileSettingsScreen(
 @Composable
 fun ProfileEditor(
     profile: ServerProfile,
+    isCurrentProfile: Boolean,
     onProfileChange: (ServerProfile) -> Unit,
     onDelete: () -> Unit
 ) {
@@ -385,9 +422,11 @@ fun ProfileEditor(
     var bitrate by remember { mutableStateOf(profile.bitrate) }
     var sampleRate by remember { mutableStateOf(profile.sampleRate) }
     var channelConfig by remember { mutableStateOf(profile.channelConfig) }
+    var bass by remember { mutableStateOf(profile.bass) }
+    var treble by remember { mutableStateOf(profile.treble) }
 
-    LaunchedEffect(name, ipAddress, port, bitrate, sampleRate, channelConfig) {
-        onProfileChange(profile.copy(name = name, ipAddress = ipAddress, port = port.toIntOrNull() ?: 8888, bitrate = bitrate, sampleRate = sampleRate, channelConfig = channelConfig))
+    LaunchedEffect(name, ipAddress, port, bitrate, sampleRate, channelConfig, bass, treble) {
+        onProfileChange(profile.copy(name = name, ipAddress = ipAddress, port = port.toIntOrNull() ?: 8888, bitrate = bitrate, sampleRate = sampleRate, channelConfig = channelConfig, bass = bass, treble = treble))
     }
 
     Card(modifier = Modifier.padding(16.dp)) {
@@ -475,6 +514,27 @@ fun ProfileEditor(
                         }
                     }
                 }
+            }
+            Text("Tone Control", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 16.dp, bottom = 8.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Bass", modifier = Modifier.width(60.dp))
+                Slider(
+                    value = bass,
+                    onValueChange = { bass = it },
+                    valueRange = -15f..15f,
+                    modifier = Modifier.weight(1f)
+                )
+                Text("%.1f dB".format(bass), modifier = Modifier.width(60.dp))
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Treble", modifier = Modifier.width(60.dp))
+                Slider(
+                    value = treble,
+                    onValueChange = { treble = it },
+                    valueRange = -15f..15f,
+                    modifier = Modifier.weight(1f)
+                )
+                Text("%.1f dB".format(treble), modifier = Modifier.width(60.dp))
             }
         }
     }
