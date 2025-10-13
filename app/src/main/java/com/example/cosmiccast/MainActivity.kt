@@ -46,6 +46,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -64,7 +65,7 @@ import androidx.navigation.NavController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
-import com.example.cosmiccast.ui.theme.CosmicCastTheme
+import com.example.cosmiccast.ui.theme.AirheadWavesTheme
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -91,6 +92,7 @@ class MainActivity : ComponentActivity() {
     private var audioLevel by mutableStateOf(0.0f)
     private var profiles by mutableStateOf<List<ServerProfile>>(emptyList())
     private var selectedProfile by mutableStateOf<ServerProfile?>(null)
+    private var visualizationEnabled by mutableStateOf(true)
 
     private val statsReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -98,7 +100,9 @@ class MainActivity : ComponentActivity() {
                 stats = intent.getStringExtra(AudioCaptureService.EXTRA_STATS) ?: ""
                 isServiceRunning = AudioCaptureService.isRunning
             } else if (intent?.action == AudioCaptureService.ACTION_AUDIO_LEVEL) {
-                audioLevel = intent.getFloatExtra(AudioCaptureService.EXTRA_AUDIO_LEVEL, 0.0f)
+                if (visualizationEnabled) {
+                    audioLevel = intent.getFloatExtra(AudioCaptureService.EXTRA_AUDIO_LEVEL, 0.0f)
+                }
             }
         }
     }
@@ -129,10 +133,11 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        val sharedPrefs = getSharedPreferences("Settings", Context.MODE_PRIVATE)
+        visualizationEnabled = sharedPrefs.getBoolean("VISUALIZATION_ENABLED", true)
         loadProfiles()
 
         setContent {
-            val sharedPrefs = getSharedPreferences("Settings", Context.MODE_PRIVATE)
             val theme = sharedPrefs.getString("THEME", "System") ?: "System"
             val isDarkTheme = when (theme) {
                 "Light" -> false
@@ -140,9 +145,9 @@ class MainActivity : ComponentActivity() {
                 else -> isSystemInDarkTheme()
             }
 
-            CosmicCastTheme(darkTheme = isDarkTheme) {
+            AirheadWavesTheme(darkTheme = isDarkTheme) {
                 val animatedColor by animateColorAsState(
-                    targetValue = if (isServiceRunning) {
+                    targetValue = if (isServiceRunning && visualizationEnabled) {
                         lerp(MaterialTheme.colorScheme.background, MaterialTheme.colorScheme.primary, audioLevel)
                     } else {
                         MaterialTheme.colorScheme.background
@@ -166,7 +171,7 @@ class MainActivity : ComponentActivity() {
                         }, { profile -> selectedProfile = profile }) { startStopService() } }
                         composable("settings") { SettingsScreen(navController) }
                         composable("profile_settings") { ProfileSettingsScreen(navController, profiles, selectedProfile?.id) { newProfiles -> saveProfiles(newProfiles) } }
-                        composable("app_settings") { AppSettingsScreen(navController, sharedPrefs) }
+                        composable("app_settings") { AppSettingsScreen(navController, sharedPrefs) { visualizationEnabled = it } }
                     }
                 }
             }
@@ -318,10 +323,11 @@ fun SettingsScreen(navController: NavController) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun AppSettingsScreen(navController: NavController, sharedPreferences: SharedPreferences) {
+fun AppSettingsScreen(navController: NavController, sharedPreferences: SharedPreferences, onVisualizationToggle: (Boolean) -> Unit) {
     val themes = listOf("Light", "Dark", "System")
     var expandedTheme by remember { mutableStateOf(false) }
     var selectedTheme by remember { mutableStateOf(sharedPreferences.getString("THEME", "System") ?: "System") }
+    var visualizationEnabled by remember { mutableStateOf(sharedPreferences.getBoolean("VISUALIZATION_ENABLED", true)) }
     val context = LocalContext.current
 
     Column(
@@ -352,9 +358,22 @@ fun AppSettingsScreen(navController: NavController, sharedPreferences: SharedPre
             }
         }
         Spacer(modifier = Modifier.height(16.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Enable Visualization")
+            Spacer(modifier = Modifier.width(16.dp))
+            Switch(
+                checked = visualizationEnabled,
+                onCheckedChange = { 
+                    visualizationEnabled = it
+                    onVisualizationToggle(it)
+                }
+            )
+        }
+        Spacer(modifier = Modifier.height(16.dp))
         Button(onClick = {
             with(sharedPreferences.edit()) {
                 putString("THEME", selectedTheme)
+                putBoolean("VISUALIZATION_ENABLED", visualizationEnabled)
                 apply()
             }
             (context as? MainActivity)?.recreate()
