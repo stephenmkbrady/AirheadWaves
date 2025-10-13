@@ -12,6 +12,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
@@ -29,6 +30,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.DropdownMenuItem
@@ -188,7 +191,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun createDefaultProfile() {
-        profiles = listOf(ServerProfile(name = "Default", ipAddress = "192.168.1.100", port = 8888, bitrate = 128000, sampleRate = 44100, channelConfig = "Mono"))
+        profiles = listOf(ServerProfile(name = "Default", ipAddress = "192.168.1.100", port = 8888, bitrate = 128000, sampleRate = 44100, channelConfig = "Stereo"))
         selectedProfile = profiles.first()
     }
 
@@ -376,7 +379,7 @@ fun ProfileSettingsScreen(
         floatingActionButton = {
             FloatingActionButton(onClick = {
                 val newProfileName = "New Profile ${editingProfiles.size + 1}"
-                editingProfiles = editingProfiles + ServerProfile(name = newProfileName, ipAddress = "", port = 8888, bitrate = 128000, sampleRate = 44100, channelConfig = "Mono")
+                editingProfiles = editingProfiles + ServerProfile(name = newProfileName, ipAddress = "", port = 8888, bitrate = 128000, sampleRate = 44100, channelConfig = "Stereo")
             }) {
                 Icon(Icons.Default.Add, contentDescription = "Add Profile")
             }
@@ -424,13 +427,18 @@ fun ProfileEditor(
     var channelConfig by remember { mutableStateOf(profile.channelConfig) }
     var bass by remember { mutableStateOf(profile.bass) }
     var treble by remember { mutableStateOf(profile.treble) }
+    var isExpanded by remember { mutableStateOf(false) }
 
     LaunchedEffect(name, ipAddress, port, bitrate, sampleRate, channelConfig, bass, treble) {
         onProfileChange(profile.copy(name = name, ipAddress = ipAddress, port = port.toIntOrNull() ?: 8888, bitrate = bitrate, sampleRate = sampleRate, channelConfig = channelConfig, bass = bass, treble = treble))
     }
 
     Card(modifier = Modifier.padding(16.dp)) {
-        Column(modifier = Modifier.padding(16.dp)) {
+        Column(
+            modifier = Modifier
+                .padding(16.dp)
+                .animateContentSize()
+        ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 OutlinedTextField(
                     value = name,
@@ -438,103 +446,108 @@ fun ProfileEditor(
                     label = { Text("Profile Name") },
                     modifier = Modifier.weight(1f)
                 )
+                IconButton(onClick = { isExpanded = !isExpanded }) {
+                    Icon(if (isExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore, contentDescription = if (isExpanded) "Collapse" else "Expand")
+                }
                 IconButton(onClick = onDelete) {
                     Icon(Icons.Default.Delete, contentDescription = "Delete Profile")
                 }
             }
-            Spacer(modifier = Modifier.height(8.dp))
-            OutlinedTextField(value = ipAddress, onValueChange = { ipAddress = it }, label = { Text("Server IP Address") })
-            Spacer(modifier = Modifier.height(8.dp))
-            OutlinedTextField(value = port, onValueChange = { port = it }, label = { Text("Server Port") })
+            if (isExpanded) {
+                Spacer(modifier = Modifier.height(8.dp))
+                OutlinedTextField(value = ipAddress, onValueChange = { ipAddress = it }, label = { Text("Server IP Address") })
+                Spacer(modifier = Modifier.height(8.dp))
+                OutlinedTextField(value = port, onValueChange = { port = it }, label = { Text("Server Port") })
 
-            val bitrates = listOf(96000, 128000, 192000, 256000, 320000)
-            var expandedBitrate by remember { mutableStateOf(false) }
-            Box(modifier = Modifier.fillMaxWidth()) {
-                ExposedDropdownMenuBox(expanded = expandedBitrate, onExpandedChange = { expandedBitrate = !expandedBitrate }) {
-                    OutlinedTextField(
-                        value = "${bitrate / 1000} kbps",
-                        onValueChange = {},
-                        readOnly = true,
-                        label = { Text("Bitrate") },
-                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expandedBitrate) },
-                        modifier = Modifier.menuAnchor()
-                    )
-                    ExposedDropdownMenu(expanded = expandedBitrate, onDismissRequest = { expandedBitrate = false }) {
-                        bitrates.forEach { b ->
-                            DropdownMenuItem(text = { Text("${b / 1000} kbps") }, onClick = {
-                                bitrate = b
-                                expandedBitrate = false
-                            })
+                val bitrates = listOf(96000, 128000, 192000, 256000, 320000)
+                var expandedBitrate by remember { mutableStateOf(false) }
+                Box(modifier = Modifier.fillMaxWidth()) {
+                    ExposedDropdownMenuBox(expanded = expandedBitrate, onExpandedChange = { expandedBitrate = !expandedBitrate }) {
+                        OutlinedTextField(
+                            value = "${bitrate / 1000} kbps",
+                            onValueChange = {},
+                            readOnly = true,
+                            label = { Text("Bitrate") },
+                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expandedBitrate) },
+                            modifier = Modifier.menuAnchor()
+                        )
+                        ExposedDropdownMenu(expanded = expandedBitrate, onDismissRequest = { expandedBitrate = false }) {
+                            bitrates.forEach { b ->
+                                DropdownMenuItem(text = { Text("${b / 1000} kbps") }, onClick = {
+                                    bitrate = b
+                                    expandedBitrate = false
+                                })
+                            }
                         }
                     }
                 }
-            }
 
-            val sampleRates = listOf(22050, 44100, 48000)
-            var expandedSampleRate by remember { mutableStateOf(false) }
-            Box(modifier = Modifier.fillMaxWidth()) {
-                ExposedDropdownMenuBox(expanded = expandedSampleRate, onExpandedChange = { expandedSampleRate = !expandedSampleRate }) {
-                    OutlinedTextField(
-                        value = "$sampleRate Hz",
-                        onValueChange = {},
-                        readOnly = true,
-                        label = { Text("Sample Rate") },
-                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expandedSampleRate) },
-                        modifier = Modifier.menuAnchor()
-                    )
-                    ExposedDropdownMenu(expanded = expandedSampleRate, onDismissRequest = { expandedSampleRate = false }) {
-                        sampleRates.forEach { sr ->
-                            DropdownMenuItem(text = { Text("$sr Hz") }, onClick = {
-                                sampleRate = sr
-                                expandedSampleRate = false
-                            })
+                val sampleRates = listOf(22050, 44100, 48000)
+                var expandedSampleRate by remember { mutableStateOf(false) }
+                Box(modifier = Modifier.fillMaxWidth()) {
+                    ExposedDropdownMenuBox(expanded = expandedSampleRate, onExpandedChange = { expandedSampleRate = !expandedSampleRate }) {
+                        OutlinedTextField(
+                            value = "$sampleRate Hz",
+                            onValueChange = {},
+                            readOnly = true,
+                            label = { Text("Sample Rate") },
+                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expandedSampleRate) },
+                            modifier = Modifier.menuAnchor()
+                        )
+                        ExposedDropdownMenu(expanded = expandedSampleRate, onDismissRequest = { expandedSampleRate = false }) {
+                            sampleRates.forEach { sr ->
+                                DropdownMenuItem(text = { Text("$sr Hz") }, onClick = {
+                                    sampleRate = sr
+                                    expandedSampleRate = false
+                                })
+                            }
                         }
                     }
                 }
-            }
 
-            val channelConfigs = listOf("Mono", "Stereo")
-            var expandedChannelConfig by remember { mutableStateOf(false) }
-            Box(modifier = Modifier.fillMaxWidth()) {
-                ExposedDropdownMenuBox(expanded = expandedChannelConfig, onExpandedChange = { expandedChannelConfig = !expandedChannelConfig }) {
-                    OutlinedTextField(
-                        value = channelConfig,
-                        onValueChange = {},
-                        readOnly = true,
-                        label = { Text("Channels") },
-                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expandedChannelConfig) },
-                        modifier = Modifier.menuAnchor()
-                    )
-                    ExposedDropdownMenu(expanded = expandedChannelConfig, onDismissRequest = { expandedChannelConfig = false }) {
-                        channelConfigs.forEach { cc ->
-                            DropdownMenuItem(text = { Text(cc) }, onClick = {
-                                channelConfig = cc
-                                expandedChannelConfig = false
-                            })
+                val channelConfigs = listOf("Mono", "Stereo")
+                var expandedChannelConfig by remember { mutableStateOf(false) }
+                Box(modifier = Modifier.fillMaxWidth()) {
+                    ExposedDropdownMenuBox(expanded = expandedChannelConfig, onExpandedChange = { expandedChannelConfig = !expandedChannelConfig }) {
+                        OutlinedTextField(
+                            value = channelConfig,
+                            onValueChange = {},
+                            readOnly = true,
+                            label = { Text("Channels") },
+                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expandedChannelConfig) },
+                            modifier = Modifier.menuAnchor()
+                        )
+                        ExposedDropdownMenu(expanded = expandedChannelConfig, onDismissRequest = { expandedChannelConfig = false }) {
+                            channelConfigs.forEach { cc ->
+                                DropdownMenuItem(text = { Text(cc) }, onClick = {
+                                    channelConfig = cc
+                                    expandedChannelConfig = false
+                                })
+                            }
                         }
                     }
                 }
-            }
-            Text("Tone Control", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 16.dp, bottom = 8.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Bass", modifier = Modifier.width(60.dp))
-                Slider(
-                    value = bass,
-                    onValueChange = { bass = it },
-                    valueRange = -15f..15f,
-                    modifier = Modifier.weight(1f)
-                )
-                Text("%.1f dB".format(bass), modifier = Modifier.width(60.dp))
-            }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Treble", modifier = Modifier.width(60.dp))
-                Slider(
-                    value = treble,
-                    onValueChange = { treble = it },
-                    valueRange = -15f..15f,
-                    modifier = Modifier.weight(1f)
-                )
-                Text("%.1f dB".format(treble), modifier = Modifier.width(60.dp))
+                Text("Tone Control", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 16.dp, bottom = 8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Bass", modifier = Modifier.width(60.dp))
+                    Slider(
+                        value = bass,
+                        onValueChange = { bass = it },
+                        valueRange = -15f..15f,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Text("%.1f dB".format(bass), modifier = Modifier.width(60.dp))
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Treble", modifier = Modifier.width(60.dp))
+                    Slider(
+                        value = treble,
+                        onValueChange = { treble = it },
+                        valueRange = -15f..15f,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Text("%.1f dB".format(treble), modifier = Modifier.width(60.dp))
+                }
             }
         }
     }
