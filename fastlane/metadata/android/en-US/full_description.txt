@@ -1,0 +1,31 @@
+AirheadWaves is a versatile Android application for real-time audio streaming from your device to a server on your local network. It captures internal audio playback, encodes it, and transmits it over TCP, making it perfect for creating a whole-house audio system or streaming to a Raspberry Pi.
+
+Features:
+• Real-time audio streaming with low latency
+• Advanced audio controls: volume, bass, and treble adjustments
+• Multi-profile system for managing multiple server configurations
+• Flexible audio settings: bitrate (96-320 kbps), sample rate (22050-48000 Hz), mono/stereo
+• Audio-reactive visualization that pulses with music
+• Modern Material Design 3 UI with light/dark/system themes
+• Robust state management across backgrounding and configuration changes
+
+Technical Details:
+• Captures internal device audio using MediaProjection API
+• Encodes to AAC format with ADTS headers
+• Streams over standard TCP sockets
+• Software-based DSP effects using custom Biquad filters
+• Built with Jetpack Compose and modern Android architecture
+
+Use Cases:
+• Whole-house audio systems with multiple receivers
+• Upgrade legacy speakers with wireless streaming
+• Multi-room audio control with quick profile switching
+• Low-latency streaming for podcasts and music
+• DIY audio projects with full pipeline control
+
+Requirements:
+• Android 10 (API 29) or higher
+• Network connectivity to receiving server
+• Server setup guide included in repository
+
+The app is completely free, open source, and contains no ads or tracking. Perfect for privacy-conscious users and DIY enthusiasts who want full control over their audio streaming setup.
