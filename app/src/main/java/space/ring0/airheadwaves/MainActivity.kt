@@ -52,6 +52,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -90,8 +92,8 @@ class MainActivity : ComponentActivity() {
 
     private var isServiceRunning by mutableStateOf(false)
     private var stats by mutableStateOf("Not Connected")
-    private var streamVolume by mutableStateOf(1.0f)
-    private var audioLevel by mutableStateOf(0.0f)
+    private var streamVolume by mutableFloatStateOf(1.0f)
+    private var audioLevel by mutableFloatStateOf(0.0f)
     private var profiles by mutableStateOf<List<ServerProfile>>(emptyList())
     private var selectedProfile by mutableStateOf<ServerProfile?>(null)
     private var visualizationEnabled by mutableStateOf(true)
@@ -443,11 +445,11 @@ fun ProfileEditor(
     var name by remember { mutableStateOf(profile.name) }
     var ipAddress by remember { mutableStateOf(profile.ipAddress) }
     var port by remember { mutableStateOf(profile.port.toString()) }
-    var bitrate by remember { mutableStateOf(profile.bitrate) }
-    var sampleRate by remember { mutableStateOf(profile.sampleRate) }
+    var bitrate by remember { mutableIntStateOf(profile.bitrate) }
+    var sampleRate by remember { mutableIntStateOf(profile.sampleRate) }
     var channelConfig by remember { mutableStateOf(profile.channelConfig) }
-    var bass by remember { mutableStateOf(profile.bass) }
-    var treble by remember { mutableStateOf(profile.treble) }
+    var bass by remember { mutableFloatStateOf(profile.bass) }
+    var treble by remember { mutableFloatStateOf(profile.treble) }
     var isExpanded by remember { mutableStateOf(false) }
 
     LaunchedEffect(name, ipAddress, port, bitrate, sampleRate, channelConfig, bass, treble) {
