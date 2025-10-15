@@ -98,11 +98,7 @@ public class AudioCaptureService extends Service {
                 .setContentText("Streaming audio to your devices.")
                 .setSmallIcon(R.mipmap.ic_launcher)
                 .build();
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(1, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION);
-        } else {
-            startForeground(1, notification);
-        }
+        startForeground(1, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION);
 
         int resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, -1);
         Intent data = intent.getParcelableExtra(EXTRA_DATA);
