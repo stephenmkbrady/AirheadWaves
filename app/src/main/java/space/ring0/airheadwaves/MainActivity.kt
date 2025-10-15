@@ -1,4 +1,4 @@
-package com.example.cosmiccast
+package space.ring0.airheadwaves
 
 import android.app.Activity
 import android.content.BroadcastReceiver
@@ -65,12 +65,14 @@ import androidx.navigation.NavController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
-import com.example.cosmiccast.ui.theme.AirheadWavesTheme
+import space.ring0.airheadwaves.ui.theme.AirheadWavesTheme
+import kotlinx.serialization.InternalSerializationApi
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.util.UUID
 
+@OptIn(InternalSerializationApi::class)
 @Serializable
 data class ServerProfile(
     val id: String = UUID.randomUUID().toString(),
@@ -133,7 +135,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val sharedPrefs = getSharedPreferences("Settings", Context.MODE_PRIVATE)
+        val sharedPrefs = getSharedPreferences("Settings", MODE_PRIVATE)
         visualizationEnabled = sharedPrefs.getBoolean("VISUALIZATION_ENABLED", true)
         loadProfiles()
 
@@ -179,7 +181,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun loadProfiles() {
-        val sharedPrefs = getSharedPreferences("Settings", Context.MODE_PRIVATE)
+        val sharedPrefs = getSharedPreferences("Settings", MODE_PRIVATE)
         streamVolume = sharedPrefs.getFloat("STREAM_VOLUME", 1.0f)
         val profilesJson = sharedPrefs.getString("PROFILES", null)
         if (profilesJson != null) {
@@ -202,7 +204,7 @@ class MainActivity : ComponentActivity() {
 
     private fun saveProfiles(newProfiles: List<ServerProfile>) {
         profiles = newProfiles
-        val sharedPrefs = getSharedPreferences("Settings", Context.MODE_PRIVATE)
+        val sharedPrefs = getSharedPreferences("Settings", MODE_PRIVATE)
         val profilesJson = Json.encodeToString(newProfiles)
         with(sharedPrefs.edit()) {
             putString("PROFILES", profilesJson)

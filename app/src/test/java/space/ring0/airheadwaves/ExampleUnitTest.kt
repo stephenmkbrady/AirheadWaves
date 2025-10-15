@@ -1,4 +1,4 @@
-package com.example.cosmiccast
+package space.ring0.airheadwaves
 
 import org.junit.Test
 

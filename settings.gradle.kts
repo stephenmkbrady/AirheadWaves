@@ -19,5 +19,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "CosmicCast"
+rootProject.name = "AirheadWaves"
 include(":app")

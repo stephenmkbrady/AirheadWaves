@@ -1,4 +1,4 @@
-package com.example.cosmiccast;
+package space.ring0.airheadwaves;
 
 import android.annotation.SuppressLint;
 import android.app.Notification;
@@ -34,13 +34,13 @@ public class AudioCaptureService extends Service {
 
     public static final String EXTRA_RESULT_CODE = "EXTRA_RESULT_CODE";
     public static final String EXTRA_DATA = "EXTRA_DATA";
-    public static final String ACTION_STATS = "com.example.cosmiccast.STATS";
+    public static final String ACTION_STATS = "com.example.space.ring0.airheadwaves.STATS";
     public static final String EXTRA_STATS = "STATS";
-    public static final String ACTION_SET_VOLUME = "com.example.cosmiccast.SET_VOLUME";
+    public static final String ACTION_SET_VOLUME = "com.example.space.ring0.airheadwaves.SET_VOLUME";
     public static final String EXTRA_VOLUME = "VOLUME";
-    public static final String ACTION_AUDIO_LEVEL = "com.example.cosmiccast.AUDIO_LEVEL";
+    public static final String ACTION_AUDIO_LEVEL = "com.example.space.ring0.airheadwaves.AUDIO_LEVEL";
     public static final String EXTRA_AUDIO_LEVEL = "AUDIO_LEVEL";
-    public static final String ACTION_UPDATE_TONE_CONTROLS = "com.example.cosmiccast.UPDATE_TONE_CONTROLS";
+    public static final String ACTION_UPDATE_TONE_CONTROLS = "com.example.space.ring0.airheadwaves.UPDATE_TONE_CONTROLS";
 
     private static final String TAG = "AudioCaptureService";
     private static final String CHANNEL_ID = "AudioCaptureServiceChannel";
@@ -94,8 +94,8 @@ public class AudioCaptureService extends Service {
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         Notification notification = new Notification.Builder(this, CHANNEL_ID)
-                .setContentTitle("CosmicCast")
-                .setContentText("Streaming audio to your Raspberry Pi.")
+                .setContentTitle("AirheadWaves")
+                .setContentText("Streaming audio to your devices.")
                 .setSmallIcon(R.mipmap.ic_launcher)
                 .build();
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {

@@ -1,4 +1,4 @@
-package com.example.cosmiccast.ui.theme
+package space.ring0.airheadwaves.ui.theme
 
 import androidx.compose.material3.Typography
 import androidx.compose.ui.text.TextStyle

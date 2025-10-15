@@ -6,13 +6,13 @@ plugins {
 }
 
 android {
-    namespace = "com.example.cosmiccast"
+    namespace = "space.ring0.airheadwaves"
     compileSdk {
         version = release(36)
     }
 
     defaultConfig {
-        applicationId = "com.example.cosmiccast"
+        applicationId = "space.ring0.airheadwaves"
         minSdk = 29
         targetSdk = 36
         versionCode = 1

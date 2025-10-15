@@ -1,4 +1,4 @@
-package com.example.cosmiccast.ui.theme
+package space.ring0.airheadwaves.ui.theme
 
 import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
