@@ -5,10 +5,7 @@ import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.Service;
-import android.content.BroadcastReceiver;
-import android.content.Context;
 import android.content.Intent;
-import android.content.IntentFilter;
 import android.content.pm.ServiceInfo;
 import android.media.AudioAttributes;
 import android.media.AudioFormat;
@@ -19,11 +16,8 @@ import android.media.MediaCodecInfo;
 import android.media.MediaFormat;
 import android.media.projection.MediaProjection;
 import android.media.projection.MediaProjectionManager;
-import android.os.Build;
 import android.os.IBinder;
 import android.util.Log;
-
-import androidx.localbroadcastmanager.content.LocalBroadcastManager;
 
 import java.io.IOException;
 import java.net.Socket;
@@ -34,13 +28,7 @@ public class AudioCaptureService extends Service {
 
     public static final String EXTRA_RESULT_CODE = "EXTRA_RESULT_CODE";
     public static final String EXTRA_DATA = "EXTRA_DATA";
-    public static final String ACTION_STATS = "com.example.space.ring0.airheadwaves.STATS";
-    public static final String EXTRA_STATS = "STATS";
-    public static final String ACTION_SET_VOLUME = "com.example.space.ring0.airheadwaves.SET_VOLUME";
     public static final String EXTRA_VOLUME = "VOLUME";
-    public static final String ACTION_AUDIO_LEVEL = "com.example.space.ring0.airheadwaves.AUDIO_LEVEL";
-    public static final String EXTRA_AUDIO_LEVEL = "AUDIO_LEVEL";
-    public static final String ACTION_UPDATE_TONE_CONTROLS = "com.example.space.ring0.airheadwaves.UPDATE_TONE_CONTROLS";
 
     private static final String TAG = "AudioCaptureService";
     private static final String CHANNEL_ID = "AudioCaptureServiceChannel";
@@ -57,37 +45,22 @@ public class AudioCaptureService extends Service {
     private int bitrate;
     private int sampleRate;
     private String channelConfig;
-    private float streamVolume = 1.0f;
-    private float bass = 0f;
-    private float treble = 0f;
 
     private BiquadFilter bassFilter;
     private BiquadFilter trebleFilter;
 
-
-    private final BroadcastReceiver settingsReceiver = new BroadcastReceiver() {
-        @Override
-        public void onReceive(Context context, Intent intent) {
-            if (ACTION_SET_VOLUME.equals(intent.getAction())) {
-                streamVolume = intent.getFloatExtra(EXTRA_VOLUME, 1.0f);
-            } else if (ACTION_UPDATE_TONE_CONTROLS.equals(intent.getAction())) {
-                bass = intent.getFloatExtra("BASS", 0f);
-                treble = intent.getFloatExtra("TREBLE", 0f);
-                updateFilters();
-            }
-        }
-    };
+    private MainViewModel viewModel;
+    private float lastBass = 0f;
+    private float lastTreble = 0f;
 
     @Override
     public void onCreate() {
         super.onCreate();
         isRunning = true;
+        viewModel = MainViewModel.Companion.getInstance(getApplication());
+        viewModel.updateServiceRunning(true);
         mediaProjectionManager = (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
         createNotificationChannel();
-        IntentFilter filter = new IntentFilter();
-        filter.addAction(ACTION_SET_VOLUME);
-        filter.addAction(ACTION_UPDATE_TONE_CONTROLS);
-        LocalBroadcastManager.getInstance(this).registerReceiver(settingsReceiver, filter);
     }
 
     @SuppressLint("MissingPermission")
@@ -107,9 +80,6 @@ public class AudioCaptureService extends Service {
         bitrate = intent.getIntExtra("BITRATE", 128000);
         sampleRate = intent.getIntExtra("SAMPLE_RATE", 44100);
         channelConfig = intent.getStringExtra("CHANNEL_CONFIG");
-        streamVolume = intent.getFloatExtra(EXTRA_VOLUME, 1.0f);
-        bass = intent.getFloatExtra("BASS", 0f);
-        treble = intent.getFloatExtra("TREBLE", 0f);
 
         mediaProjection = mediaProjectionManager.getMediaProjection(resultCode, data);
 
@@ -163,12 +133,7 @@ public class AudioCaptureService extends Service {
     private void setupFilters() {
         bassFilter = new BiquadFilter(sampleRate);
         trebleFilter = new BiquadFilter(sampleRate);
-        updateFilters();
-    }
-
-    private void updateFilters() {
-        bassFilter.setLowShelf(bass, 200f);
-        trebleFilter.setHighShelf(treble, 3000f);
+        // Filters will be initialized with 0dB (no effect) and updated dynamically in applyAudioEffects
     }
 
     private void addAdtsHeader(byte[] packet, int packetLen) {
@@ -199,7 +164,25 @@ public class AudioCaptureService extends Service {
     }
 
     private void applyAudioEffects(ByteBuffer buffer, int bytes) {
-        float scaledVolume = streamVolume * streamVolume * streamVolume;
+        // Read current volume from ViewModel for real-time updates
+        float currentVolume = viewModel.getStreamVolume().getValue();
+        float scaledVolume = currentVolume * currentVolume * currentVolume;
+
+        // Read current bass/treble from selected profile for real-time updates
+        ServerProfile selectedProfile = viewModel.getSelectedProfile().getValue();
+        if (selectedProfile != null) {
+            float currentBass = selectedProfile.getBass();
+            float currentTreble = selectedProfile.getTreble();
+
+            // Update filters if bass or treble changed
+            if (currentBass != lastBass || currentTreble != lastTreble) {
+                bassFilter.setLowShelf(currentBass, 200f);
+                trebleFilter.setHighShelf(currentTreble, 3000f);
+                lastBass = currentBass;
+                lastTreble = currentTreble;
+            }
+        }
+
         buffer.order(ByteOrder.LITTLE_ENDIAN);
         int numSamples = bytes / 2;
 
@@ -211,7 +194,7 @@ public class AudioCaptureService extends Service {
             sample = trebleFilter.process(sample);
 
             sample *= scaledVolume;
-            
+
             sample = Math.max(-1.0f, Math.min(1.0f, sample));
 
             buffer.putShort(i * 2, (short) (sample * 32767f));
@@ -231,14 +214,12 @@ public class AudioCaptureService extends Service {
         double rms = Math.sqrt((double) sumOfSquares / numSamples);
         float normalizedRms = (float) (rms / 32767.0);
 
-        Intent intent = new Intent(ACTION_AUDIO_LEVEL);
-        intent.putExtra(EXTRA_AUDIO_LEVEL, normalizedRms);
-        LocalBroadcastManager.getInstance(this).sendBroadcast(intent);
+        viewModel.updateAudioLevel(normalizedRms);
     }
 
     private void encodeAndStreamAudio() {
         try (Socket socket = new Socket(serverIp, serverPort)) {
-            broadcastStats("Connected");
+            viewModel.updateStats("Connected");
             MediaCodec.BufferInfo bufferInfo = new MediaCodec.BufferInfo();
             long lastStatTime = System.currentTimeMillis();
             long bytesSent = 0;
@@ -272,7 +253,7 @@ public class AudioCaptureService extends Service {
 
                     if (System.currentTimeMillis() - lastStatTime > 1000) {
                         long bps = (bytesSent * 8) / ((System.currentTimeMillis() - lastStatTime) / 1000);
-                        broadcastStats("Connected\n" + bps / 1000 + " kbps");
+                        viewModel.updateStats("Connected\n" + bps / 1000 + " kbps");
                         lastStatTime = System.currentTimeMillis();
                         bytesSent = 0;
                     }
@@ -283,36 +264,54 @@ public class AudioCaptureService extends Service {
             }
         } catch (IOException e) {
             Log.e(TAG, "Error while streaming audio", e);
-            broadcastStats("Error: " + e.getMessage());
+            viewModel.updateStats("Error: " + e.getMessage());
         }
-    }
-
-    private void broadcastStats(String stats) {
-        Intent intent = new Intent(ACTION_STATS);
-        intent.putExtra(EXTRA_STATS, stats);
-        LocalBroadcastManager.getInstance(this).sendBroadcast(intent);
     }
 
     @Override
     public void onDestroy() {
         super.onDestroy();
         isRunning = false;
-        LocalBroadcastManager.getInstance(this).unregisterReceiver(settingsReceiver);
+
+        // Interrupt and wait for capture thread to finish
         if (captureThread != null) {
             captureThread.interrupt();
+            try {
+                captureThread.join(1000); // Wait up to 1 second for thread to finish
+            } catch (InterruptedException e) {
+                Log.e(TAG, "Interrupted while waiting for capture thread", e);
+            }
         }
+
+        // Now safely release resources in order
         if (audioRecord != null) {
-            audioRecord.stop();
-            audioRecord.release();
+            try {
+                audioRecord.stop();
+                audioRecord.release();
+            } catch (IllegalStateException e) {
+                Log.e(TAG, "Error stopping audioRecord", e);
+            }
+            audioRecord = null;
         }
+
         if (mediaCodec != null) {
-            mediaCodec.stop();
-            mediaCodec.release();
+            try {
+                mediaCodec.stop();
+                mediaCodec.release();
+            } catch (IllegalStateException e) {
+                Log.e(TAG, "Error stopping mediaCodec", e);
+            }
+            mediaCodec = null;
         }
+
         if (mediaProjection != null) {
             mediaProjection.stop();
+            mediaProjection = null;
         }
-        broadcastStats("Not Connected");
+
+        viewModel.updateStats("Not Connected");
+        viewModel.updateAudioLevel(0.0f);
+        viewModel.updateServiceRunning(false);
     }
 
     private void createNotificationChannel() {

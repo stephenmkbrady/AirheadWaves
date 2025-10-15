@@ -1,10 +1,6 @@
 package space.ring0.airheadwaves
 
-import android.app.Activity
-import android.content.BroadcastReceiver
-import android.content.Context
 import android.content.Intent
-import android.content.IntentFilter
 import android.content.SharedPreferences
 import android.media.projection.MediaProjectionManager
 import android.os.Bundle
@@ -50,8 +46,8 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -63,22 +59,17 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import androidx.navigation.NavController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import space.ring0.airheadwaves.ui.theme.AirheadWavesTheme
-import kotlinx.serialization.InternalSerializationApi
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.encodeToString
-import kotlinx.serialization.json.Json
 import java.util.UUID
 
-@OptIn(InternalSerializationApi::class)
 @Serializable
 data class ServerProfile(
-    val id: String = UUID.randomUUID().toString(),
+    val id: String,
     val name: String,
     val ipAddress: String,
     val port: Int,
@@ -91,33 +82,12 @@ data class ServerProfile(
 
 class MainActivity : ComponentActivity() {
 
-    private var isServiceRunning by mutableStateOf(false)
-    private var stats by mutableStateOf("Not Connected")
-    private var streamVolume by mutableFloatStateOf(1.0f)
-    private var audioLevel by mutableFloatStateOf(0.0f)
-    private var profiles by mutableStateOf<List<ServerProfile>>(emptyList())
-    private var selectedProfile by mutableStateOf<ServerProfile?>(null)
-    private var visualizationEnabled by mutableStateOf(true)
-
-    private val statsReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context?, intent: Intent?) {
-            if (intent?.action == AudioCaptureService.ACTION_STATS) {
-                stats = intent.getStringExtra(AudioCaptureService.EXTRA_STATS) ?: ""
-                isServiceRunning = AudioCaptureService.isRunning
-            } else if (intent?.action == AudioCaptureService.ACTION_AUDIO_LEVEL) {
-                if (visualizationEnabled) {
-                    audioLevel = intent.getFloatExtra(AudioCaptureService.EXTRA_AUDIO_LEVEL, 0.0f)
-                }
-            }
-        }
-    }
-
     private val mediaProjectionManager by lazy { getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager }
+    private lateinit var viewModel: MainViewModel
 
     private val startMediaProjection = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
-        if (it.resultCode == Activity.RESULT_OK) {
-            selectedProfile?.let {
-                profile ->
+        if (it.resultCode == RESULT_OK) {
+            viewModel.selectedProfile.value?.let { profile ->
                 val serviceIntent = Intent(this, AudioCaptureService::class.java).apply {
                     putExtra(AudioCaptureService.EXTRA_RESULT_CODE, it.resultCode)
                     putExtra(AudioCaptureService.EXTRA_DATA, it.data)
@@ -128,27 +98,35 @@ class MainActivity : ComponentActivity() {
                     putExtra("CHANNEL_CONFIG", profile.channelConfig)
                     putExtra("BASS", profile.bass)
                     putExtra("TREBLE", profile.treble)
-                    putExtra(AudioCaptureService.EXTRA_VOLUME, streamVolume)
+                    putExtra(AudioCaptureService.EXTRA_VOLUME, viewModel.streamVolume.value)
                 }
                 startForegroundService(serviceIntent)
-                isServiceRunning = true
+                // Service will update ViewModel state in onCreate
             }
         }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val sharedPrefs = getSharedPreferences("Settings", MODE_PRIVATE)
-        visualizationEnabled = sharedPrefs.getBoolean("VISUALIZATION_ENABLED", true)
-        loadProfiles()
+        viewModel = MainViewModel.getInstance(application)
 
         setContent {
+            val sharedPrefs = getSharedPreferences("Settings", MODE_PRIVATE)
             val theme = sharedPrefs.getString("THEME", "System") ?: "System"
             val isDarkTheme = when (theme) {
                 "Light" -> false
                 "Dark" -> true
                 else -> isSystemInDarkTheme()
             }
+
+            // Collect state from ViewModel
+            val isServiceRunning by viewModel.isServiceRunning.collectAsState()
+            val stats by viewModel.stats.collectAsState()
+            val streamVolume by viewModel.streamVolume.collectAsState()
+            val audioLevel by viewModel.audioLevel.collectAsState()
+            val profiles by viewModel.profiles.collectAsState()
+            val selectedProfile by viewModel.selectedProfile.collectAsState()
+            val visualizationEnabled by viewModel.visualizationEnabled.collectAsState()
 
             AirheadWavesTheme(darkTheme = isDarkTheme) {
                 val animatedColor by animateColorAsState(
@@ -163,77 +141,47 @@ class MainActivity : ComponentActivity() {
                 Surface(modifier = Modifier.fillMaxSize(), color = animatedColor) {
                     val navController = rememberNavController()
                     NavHost(navController = navController, startDestination = "main") {
-                        composable("main") { MainScreen(navController, isServiceRunning, stats, streamVolume, profiles, selectedProfile, {
-                            newVolume ->
-                            streamVolume = newVolume
-                            val intent = Intent(AudioCaptureService.ACTION_SET_VOLUME)
-                            intent.putExtra(AudioCaptureService.EXTRA_VOLUME, newVolume)
-                            LocalBroadcastManager.getInstance(this@MainActivity).sendBroadcast(intent)
-                            with(sharedPrefs.edit()) {
-                                putFloat("STREAM_VOLUME", newVolume)
-                                apply()
-                            }
-                        }, { profile -> selectedProfile = profile }) { startStopService() } }
+                        composable("main") {
+                            MainScreen(
+                                navController = navController,
+                                isServiceRunning = isServiceRunning,
+                                stats = stats,
+                                currentVolume = streamVolume,
+                                profiles = profiles,
+                                selectedProfile = selectedProfile,
+                                onVolumeChange = { viewModel.updateStreamVolume(it) },
+                                onProfileSelected = { viewModel.selectProfile(it) },
+                                onStartStopClick = { startStopService(isServiceRunning) }
+                            )
+                        }
                         composable("settings") { SettingsScreen(navController) }
-                        composable("profile_settings") { ProfileSettingsScreen(navController, profiles, selectedProfile?.id) { newProfiles -> saveProfiles(newProfiles) } }
-                        composable("app_settings") { AppSettingsScreen(navController, sharedPrefs) { visualizationEnabled = it } }
+                        composable("profile_settings") {
+                            ProfileSettingsScreen(
+                                profiles = profiles,
+                                onSave = { viewModel.updateProfiles(it) }
+                            )
+                        }
+                        composable("app_settings") {
+                            AppSettingsScreen(
+                                sharedPreferences = sharedPrefs,
+                                onVisualizationToggle = { viewModel.updateVisualizationEnabled(it) }
+                            )
+                        }
                     }
                 }
             }
         }
     }
 
-    private fun loadProfiles() {
-        val sharedPrefs = getSharedPreferences("Settings", MODE_PRIVATE)
-        streamVolume = sharedPrefs.getFloat("STREAM_VOLUME", 1.0f)
-        val profilesJson = sharedPrefs.getString("PROFILES", null)
-        if (profilesJson != null) {
-            try {
-                profiles = Json.decodeFromString(profilesJson)
-                selectedProfile = profiles.firstOrNull()
-            } catch (e: Exception) {
-                createDefaultProfile()
-                saveProfiles(profiles)
-            }
-        } else {
-            createDefaultProfile()
-        }
-    }
-
-    private fun createDefaultProfile() {
-        profiles = listOf(ServerProfile(name = "Default", ipAddress = "192.168.1.100", port = 8888, bitrate = 128000, sampleRate = 44100, channelConfig = "Stereo"))
-        selectedProfile = profiles.first()
-    }
-
-    private fun saveProfiles(newProfiles: List<ServerProfile>) {
-        profiles = newProfiles
-        val sharedPrefs = getSharedPreferences("Settings", MODE_PRIVATE)
-        val profilesJson = Json.encodeToString(newProfiles)
-        with(sharedPrefs.edit()) {
-            putString("PROFILES", profilesJson)
-            apply()
-        }
-    }
-
     override fun onResume() {
         super.onResume()
-        isServiceRunning = AudioCaptureService.isRunning
-        val intentFilter = IntentFilter()
-        intentFilter.addAction(AudioCaptureService.ACTION_STATS)
-        intentFilter.addAction(AudioCaptureService.ACTION_AUDIO_LEVEL)
-        LocalBroadcastManager.getInstance(this).registerReceiver(statsReceiver, intentFilter)
+        viewModel.updateServiceRunning(AudioCaptureService.isRunning)
     }
 
-    override fun onPause() {
-        super.onPause()
-        LocalBroadcastManager.getInstance(this).unregisterReceiver(statsReceiver)
-    }
-
-    private fun startStopService() {
+    private fun startStopService(isServiceRunning: Boolean) {
         if (isServiceRunning) {
             stopService(Intent(this, AudioCaptureService::class.java))
-            isServiceRunning = false
-            stats = "Not Connected"
+            // Service will update ViewModel state in onDestroy
         } else {
             startMediaProjection.launch(mediaProjectionManager.createScreenCaptureIntent())
         }
@@ -260,7 +208,7 @@ fun MainScreen(
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Text(text = stats)
+        Text(text = stats, color = MaterialTheme.colorScheme.onBackground)
         Spacer(modifier = Modifier.height(16.dp))
 
         if (profiles.isNotEmpty()) {
@@ -299,7 +247,7 @@ fun MainScreen(
             Text(text = "Settings")
         }
         Spacer(modifier = Modifier.height(32.dp))
-        Text(text = "Volume")
+        Text(text = "Volume", color = MaterialTheme.colorScheme.onBackground)
         Slider(
             value = currentVolume,
             onValueChange = { onVolumeChange(it) },
@@ -328,7 +276,7 @@ fun SettingsScreen(navController: NavController) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun AppSettingsScreen(navController: NavController, sharedPreferences: SharedPreferences, onVisualizationToggle: (Boolean) -> Unit) {
+fun AppSettingsScreen(sharedPreferences: SharedPreferences, onVisualizationToggle: (Boolean) -> Unit) {
     val themes = listOf("Light", "Dark", "System")
     var expandedTheme by remember { mutableStateOf(false) }
     var selectedTheme by remember { mutableStateOf(sharedPreferences.getString("THEME", "System") ?: "System") }
@@ -364,11 +312,11 @@ fun AppSettingsScreen(navController: NavController, sharedPreferences: SharedPre
         }
         Spacer(modifier = Modifier.height(16.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("Enable Visualization")
+            Text("Enable Visualization", color = MaterialTheme.colorScheme.onBackground)
             Spacer(modifier = Modifier.width(16.dp))
             Switch(
                 checked = visualizationEnabled,
-                onCheckedChange = { 
+                onCheckedChange = {
                     visualizationEnabled = it
                     onVisualizationToggle(it)
                 }
@@ -391,19 +339,23 @@ fun AppSettingsScreen(navController: NavController, sharedPreferences: SharedPre
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ProfileSettingsScreen(
-    navController: NavController,
     profiles: List<ServerProfile>,
-    currentProfileId: String?,
     onSave: (List<ServerProfile>) -> Unit
 ) {
     var editingProfiles by remember { mutableStateOf(profiles) }
-    val context = LocalContext.current
+
+    // Save immediately when editingProfiles changes
+    LaunchedEffect(editingProfiles) {
+        if (editingProfiles != profiles) {
+            onSave(editingProfiles)
+        }
+    }
 
     Scaffold(
         floatingActionButton = {
             FloatingActionButton(onClick = {
                 val newProfileName = "New Profile ${editingProfiles.size + 1}"
-                editingProfiles = editingProfiles + ServerProfile(name = newProfileName, ipAddress = "", port = 8888, bitrate = 128000, sampleRate = 44100, channelConfig = "Stereo")
+                editingProfiles = editingProfiles + ServerProfile(id = UUID.randomUUID().toString(), name = newProfileName, ipAddress = "", port = 8888, bitrate = 128000, sampleRate = 44100, channelConfig = "Stereo")
             }) {
                 Icon(Icons.Default.Add, contentDescription = "Add Profile")
             }
@@ -411,26 +363,14 @@ fun ProfileSettingsScreen(
     ) {
         LazyColumn(modifier = Modifier.padding(it)) {
             items(editingProfiles, key = { it.id }) { profile ->
-                ProfileEditor(profile, profile.id == currentProfileId, onProfileChange = { updatedProfile ->
+                ProfileEditor(profile, onProfileChange = { updatedProfile ->
                     editingProfiles = editingProfiles.map { p ->
                         if (p.id == profile.id) updatedProfile else p
-                    }
-                    if(profile.id == currentProfileId) {
-                        val intent = Intent(AudioCaptureService.ACTION_UPDATE_TONE_CONTROLS)
-                        intent.putExtra("BASS", updatedProfile.bass)
-                        intent.putExtra("TREBLE", updatedProfile.treble)
-                        LocalBroadcastManager.getInstance(context).sendBroadcast(intent)
                     }
                 }, onDelete = {
                     editingProfiles = editingProfiles.filter { p -> p.id != profile.id }
                 })
             }
-        }
-    }
-
-    DisposableEffect(Unit) {
-        onDispose {
-            onSave(editingProfiles)
         }
     }
 }
@@ -439,7 +379,6 @@ fun ProfileSettingsScreen(
 @Composable
 fun ProfileEditor(
     profile: ServerProfile,
-    isCurrentProfile: Boolean,
     onProfileChange: (ServerProfile) -> Unit,
     onDelete: () -> Unit
 ) {
