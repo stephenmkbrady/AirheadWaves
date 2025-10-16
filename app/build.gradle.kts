@@ -8,6 +8,7 @@ plugins {
 android {
     namespace = "space.ring0.airheadwaves"
     compileSdk = 36
+    buildToolsVersion = "34.0.0"
 
     defaultConfig {
         applicationId = "space.ring0.airheadwaves"
@@ -17,15 +18,30 @@ android {
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        // Reproducible builds: disable PNG generation for vector drawables
+        vectorDrawables.useSupportLibrary = true
+    }
+
+    packaging {
+        resources {
+            excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
+            // Reproducible builds: disable PNG crunching
+            isCrunchPngs = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+        }
+        debug {
+            // Reproducible builds: disable PNG crunching
+            isCrunchPngs = false
         }
     }
     compileOptions {
