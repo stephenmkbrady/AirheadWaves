@@ -10,6 +10,12 @@ android {
     compileSdk = 36
     buildToolsVersion = "34.0.0"
 
+    // Disable Google's DependencyInfoBlock for F-Droid
+    dependenciesInfo {
+        includeInApk = false
+        includeInBundle = false
+    }
+
     defaultConfig {
         applicationId = "space.ring0.airheadwaves"
         minSdk = 29
