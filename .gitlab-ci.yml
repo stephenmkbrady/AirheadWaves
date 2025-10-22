@@ -73,10 +73,10 @@ create_release:
     - export APK_NAME="AirheadWaves-${VERSION_NAME}-${VERSION_CODE}.apk"
     # Get the build_release job ID from this pipeline
     - export BUILD_JOB_ID=$(curl -s --header "JOB-TOKEN ${CI_JOB_TOKEN}" "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/pipelines/${CI_PIPELINE_ID}/jobs" | jq -r '.[] | select(.name == "build_release") | .id')
-    - echo "Build job ID: ${BUILD_JOB_ID}"
+    - echo "Build job ID ${BUILD_JOB_ID}"
     # Create APK download URL
     - export APK_URL="${CI_PROJECT_URL}/-/jobs/${BUILD_JOB_ID}/artifacts/raw/app/build/outputs/apk/release/${APK_NAME}"
-    - echo "APK URL: ${APK_URL}"
+    - echo "APK URL ${APK_URL}"
     # Create release
     - chmod +x create_release.sh
     - ./create_release.sh
