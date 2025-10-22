@@ -84,6 +84,12 @@ create_release:
       EOF
     # Expand variables in release notes
     - export RELEASE_DESCRIPTION=$(cat release_notes.md | envsubst)
+    # Get the build_release job ID from this pipeline
+    - export BUILD_JOB_ID=$(curl -s --header "JOB-TOKEN: ${CI_JOB_TOKEN}" "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/pipelines/${CI_PIPELINE_ID}/jobs" | jq -r '.[] | select(.name == "build_release") | .id')
+    - echo "Build job ID: ${BUILD_JOB_ID}"
+    # Create APK download URL
+    - export APK_URL="${CI_PROJECT_URL}/-/jobs/${BUILD_JOB_ID}/artifacts/raw/app/build/outputs/apk/release/${APK_NAME}"
+    - echo "APK URL: ${APK_URL}"
     # Create the release using curl with JOB-TOKEN header
     - |
       curl --fail --request POST \
@@ -92,7 +98,14 @@ create_release:
         --data "{
           \"name\": \"Release ${VERSION_NAME}\",
           \"tag_name\": \"${CI_COMMIT_TAG}\",
-          \"description\": $(echo "$RELEASE_DESCRIPTION" | jq -Rs .)
+          \"description\": \"Download the APK from the link below.\",
+          \"assets\": {
+            \"links\": [{
+              \"name\": \"${APK_NAME}\",
+              \"url\": \"${APK_URL}\",
+              \"link_type\": \"package\"
+            }]
+          }
         }" \
         "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/releases"
   dependencies:
