@@ -20,8 +20,8 @@ android {
         applicationId = "space.ring0.airheadwaves"
         minSdk = 29
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -35,8 +35,21 @@ android {
         }
     }
 
+    signingConfigs {
+        create("release") {
+            // CI/CD will inject these properties at build time
+            System.getProperty("android.injected.signing.store.file")?.let {
+                storeFile = file(it)
+                storePassword = System.getProperty("android.injected.signing.store.password")
+                keyAlias = System.getProperty("android.injected.signing.key.alias")
+                keyPassword = System.getProperty("android.injected.signing.key.password")
+            }
+        }
+    }
+
     buildTypes {
         release {
+            signingConfig = signingConfigs.getByName("release")
             isMinifyEnabled = false
             // Reproducible builds: disable PNG crunching
             isCrunchPngs = false

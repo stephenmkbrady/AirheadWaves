@@ -1,0 +1,65 @@
+# Docker image with Android SDK pre-installed
+image: mingc/android-build-box:latest
+
+# Pipeline stages
+stages:
+  - test
+  - build
+
+# Cache Gradle dependencies to speed up builds
+cache:
+  key: ${CI_PROJECT_ID}
+  paths:
+    - .gradle/wrapper
+    - .gradle/caches
+
+# Gradle configuration
+variables:
+  GRADLE_OPTS: "-Dorg.gradle.daemon=false"
+
+# Runs before every job - decodes and prepares keystore
+before_script:
+  - echo $KEYSTORE_FILE | base64 -d > my-release-key.keystore
+  - export KEYSTORE_PATH=$(pwd)/my-release-key.keystore
+
+# Job: Run unit tests
+test:
+  stage: test
+  script:
+    - chmod +x ./gradlew
+    - ./gradlew test
+  artifacts:
+    when: always
+    reports:
+      junit: app/build/test-results/test*/TEST-*.xml
+  allow_failure: true
+
+# Job: Build debug APK (runs on all branches)
+build_debug:
+  stage: build
+  script:
+    - chmod +x ./gradlew
+    - ./gradlew assembleDebug
+  artifacts:
+    paths:
+      - app/build/outputs/apk/debug/*.apk
+    expire_in: 7 days
+
+# Job: Build signed release APK (runs only on main/master branch)
+build_release:
+  stage: build
+  script:
+    - chmod +x ./gradlew
+    - ./gradlew assembleRelease
+      -Pandroid.injected.signing.store.file=$KEYSTORE_PATH
+      -Pandroid.injected.signing.store.password=$KEYSTORE_PASSWORD
+      -Pandroid.injected.signing.key.alias=$KEY_ALIAS
+      -Pandroid.injected.signing.key.password=$KEY_PASSWORD
+  artifacts:
+    paths:
+      - app/build/outputs/apk/release/*.apk
+    expire_in: 30 days
+  only:
+    - main
+    - master
+    - tags
