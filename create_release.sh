@@ -9,7 +9,7 @@ cat > release.json <<EOF
 {
   "name": "Release ${VERSION_NAME}",
   "tag_name": "${CI_COMMIT_TAG}",
-  "description": "## Download\n\n[${APK_NAME}](${STABLE_APK_URL})\n\n**SHA256:** (to be added)\n\n---\n\nFor F-Droid submission.",
+  "description": "## Download\n\n[${APK_NAME}](${STABLE_APK_URL})",
   "assets": {
     "links": [{
       "name": "${APK_NAME}",
