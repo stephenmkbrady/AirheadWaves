@@ -91,23 +91,12 @@ create_release:
     - export APK_URL="${CI_PROJECT_URL}/-/jobs/${BUILD_JOB_ID}/artifacts/raw/app/build/outputs/apk/release/${APK_NAME}"
     - echo "APK URL: ${APK_URL}"
     # Create the release using curl with JOB-TOKEN header
-    - |
-      curl --fail --request POST \
-        --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
-        --header "Content-Type: application/json" \
-        --data "{
-          \"name\": \"Release ${VERSION_NAME}\",
-          \"tag_name\": \"${CI_COMMIT_TAG}\",
-          \"description\": \"Download the APK from the link below.\",
-          \"assets\": {
-            \"links\": [{
-              \"name\": \"${APK_NAME}\",
-              \"url\": \"${APK_URL}\",
-              \"link_type\": \"package\"
-            }]
-          }
-        }" \
-        "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/releases"
+    - >
+      curl --fail --request POST
+      --header "JOB-TOKEN: ${CI_JOB_TOKEN}"
+      --header "Content-Type: application/json"
+      --data "{\"name\": \"Release ${VERSION_NAME}\", \"tag_name\": \"${CI_COMMIT_TAG}\", \"description\": \"Download the APK from the link below.\", \"assets\": {\"links\": [{\"name\": \"${APK_NAME}\", \"url\": \"${APK_URL}\", \"link_type\": \"package\"}]}}"
+      "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/releases"
   dependencies:
     - build_release
   only:
