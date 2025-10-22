@@ -5,6 +5,7 @@ image: mingc/android-build-box:latest
 stages:
   - test
   - build
+  - release
 
 # Cache Gradle dependencies to speed up builds
 cache:
@@ -17,12 +18,15 @@ cache:
 variables:
   GRADLE_OPTS: "-Dorg.gradle.daemon=false"
 
-# Runs before every job - decodes and prepares keystore
+# Runs before every job - decodes and prepares keystore (only for build jobs)
 before_script:
-  - echo $KEYSTORE_FILE | base64 -d > my-release-key.keystore
-  - export KEYSTORE_PATH=$(pwd)/my-release-key.keystore
+  - |
+    if [ -n "$KEYSTORE_FILE" ]; then
+      echo $KEYSTORE_FILE | base64 -d > my-release-key.keystore
+      export KEYSTORE_PATH=$(pwd)/my-release-key.keystore
+    fi
 
-# Job: Run unit tests
+# Job: Run unit tests (runs on all commits and tags)
 test:
   stage: test
   script:
@@ -34,18 +38,7 @@ test:
       junit: app/build/test-results/test*/TEST-*.xml
   allow_failure: true
 
-# Job: Build debug APK (runs on all branches)
-build_debug:
-  stage: build
-  script:
-    - chmod +x ./gradlew
-    - ./gradlew assembleDebug
-  artifacts:
-    paths:
-      - app/build/outputs/apk/debug/*.apk
-    expire_in: 7 days
-
-# Job: Build signed release APK (runs only on main/master branch)
+# Job: Build signed release APK (only on tags)
 build_release:
   stage: build
   script:
@@ -55,11 +48,49 @@ build_release:
       -Pandroid.injected.signing.store.password=$KEYSTORE_PASSWORD
       -Pandroid.injected.signing.key.alias=$KEY_ALIAS
       -Pandroid.injected.signing.key.password=$KEY_PASSWORD
+    # Extract version info from build.gradle.kts
+    - export VERSION_NAME=$(grep 'versionName = ' app/build.gradle.kts | sed 's/.*"\(.*\)".*/\1/')
+    - export VERSION_CODE=$(grep 'versionCode = ' app/build.gradle.kts | sed 's/.*= \(.*\)/\1/')
+    # Rename APK to include version for F-Droid
+    - mv app/build/outputs/apk/release/app-release.apk app/build/outputs/apk/release/AirheadWaves-${VERSION_NAME}-${VERSION_CODE}.apk
   artifacts:
     paths:
       - app/build/outputs/apk/release/*.apk
-    expire_in: 30 days
+    expire_in: 90 days
   only:
-    - main
-    - master
+    - tags
+
+# Job: Create GitLab Release (only on tags, after successful build)
+create_release:
+  stage: release
+  image: alpine:latest
+  before_script:
+    - apk add --no-cache curl git
+    # Install glab CLI
+    - curl -s https://gitlab.com/gitlab-org/cli/-/releases/permalink/latest/downloads/glab_Linux_x86_64.tar.gz | tar -xz -C /usr/local/bin
+  script:
+    # Extract version info
+    - export VERSION_NAME=$(grep 'versionName = ' app/build.gradle.kts | sed 's/.*"\(.*\)".*/\1/')
+    - export VERSION_CODE=$(grep 'versionCode = ' app/build.gradle.kts | sed 's/.*= \(.*\)/\1/')
+    - export APK_NAME="AirheadWaves-${VERSION_NAME}-${VERSION_CODE}.apk"
+    # Get tag message
+    - export TAG_MESSAGE=$(git tag -l --format='%(contents)' $CI_COMMIT_TAG)
+    # Create release notes with F-Droid download link
+    - |
+      cat > release_notes.md <<EOF
+      ${TAG_MESSAGE}
+
+      ---
+
+      **APK URL:**
+      https://gitlab.com/stephen.mk.brady-group/AirheadWaves/-/releases/${CI_COMMIT_TAG}/downloads/AirheadWaves-${VERSION_NAME}-${VERSION_CODE}.apk
+
+      https://gitlab.com/stephen.mk.brady-group/AirheadWaves/-/releases/v%%v/downloads/AirheadWaves-%%v-%%c.apk
+      Where \`%%v\` = versionName and \`%%c\` = versionCode
+      EOF
+    # Create the release with glab
+    - glab release create $CI_COMMIT_TAG --notes-file release_notes.md --assets-links "[{\"name\":\"${APK_NAME}\",\"url\":\"${CI_PROJECT_URL}/builds/artifacts/${CI_COMMIT_TAG}/raw/app/build/outputs/apk/release/${APK_NAME}?job=build_release\"}]"
+  dependencies:
+    - build_release
+  only:
     - tags
