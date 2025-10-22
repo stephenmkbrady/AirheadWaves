@@ -77,6 +77,8 @@ create_release:
     - export APK_NAME="AirheadWaves-${VERSION_NAME}-${VERSION_CODE}.apk"
     # Get tag message
     - export TAG_MESSAGE=$(git tag -l --format='%(contents)' $CI_COMMIT_TAG)
+    # Set GITLAB_TOKEN for glab authentication
+    - export GITLAB_TOKEN=${CI_JOB_TOKEN}
     # Create release notes with F-Droid download link
     - |
       cat > release_notes.md <<EOF
@@ -90,8 +92,8 @@ create_release:
       https://gitlab.com/stephen.mk.brady-group/AirheadWaves/-/releases/v%%v/downloads/AirheadWaves-%%v-%%c.apk
       Where \`%%v\` = versionName and \`%%c\` = versionCode
       EOF
-    # Create the release with glab
-    - glab release create $CI_COMMIT_TAG --notes-file release_notes.md --assets-links "[{\"name\":\"${APK_NAME}\",\"url\":\"${CI_PROJECT_URL}/builds/artifacts/${CI_COMMIT_TAG}/raw/app/build/outputs/apk/release/${APK_NAME}?job=build_release\"}]"
+    # Create the release with glab using GitLab API directly
+    - glab api projects/${CI_PROJECT_ID}/releases --method POST --field tag_name=${CI_COMMIT_TAG} --field name="Release ${VERSION_NAME}" --field description="$(cat release_notes.md)"
   dependencies:
     - build_release
   only:
