@@ -14,7 +14,12 @@ import java.io.File
  */
 class FDroidComplianceTest {
 
-    private val buildGradleFile = File("app/build.gradle.kts")
+    private val buildGradleFile = File("build.gradle.kts").let { file ->
+        // Try current directory first (CI environment)
+        if (file.exists()) file
+        // Fall back to app/ subdirectory (local environment)
+        else File("app/build.gradle.kts")
+    }
 
     @Test
     fun testBuildGradleFileExists() {
