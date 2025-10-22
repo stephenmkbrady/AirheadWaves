@@ -71,19 +71,6 @@ create_release:
     - export VERSION_NAME=$(grep 'versionName = ' app/build.gradle.kts | sed 's/.*"\(.*\)".*/\1/')
     - export VERSION_CODE=$(grep 'versionCode = ' app/build.gradle.kts | sed 's/.*= \(.*\)/\1/')
     - export APK_NAME="AirheadWaves-${VERSION_NAME}-${VERSION_CODE}.apk"
-    # Get tag message
-    - export TAG_MESSAGE=$(git tag -l --format='%(contents)' $CI_COMMIT_TAG || echo "")
-    # Create release notes with F-Droid download link
-    - |
-      cat > release_notes.md <<'EOF'
-      ${TAG_MESSAGE}
-
-      ---
-
-      **Download:** [${APK_NAME}](${CI_PROJECT_URL}/-/jobs/artifacts/${CI_COMMIT_TAG}/raw/app/build/outputs/apk/release/${APK_NAME}?job=build_release)
-      EOF
-    # Expand variables in release notes
-    - export RELEASE_DESCRIPTION=$(cat release_notes.md | envsubst)
     # Get the build_release job ID from this pipeline
     - export BUILD_JOB_ID=$(curl -s --header "JOB-TOKEN: ${CI_JOB_TOKEN}" "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/pipelines/${CI_PIPELINE_ID}/jobs" | jq -r '.[] | select(.name == "build_release") | .id')
     - echo "Build job ID: ${BUILD_JOB_ID}"
