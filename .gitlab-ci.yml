@@ -44,10 +44,10 @@ build_release:
   script:
     - chmod +x ./gradlew
     - ./gradlew assembleRelease
-      -Dandroid.injected.signing.store.file=$KEYSTORE_PATH
-      -Dandroid.injected.signing.store.password=$KEYSTORE_PASSWORD
-      -Dandroid.injected.signing.key.alias=$KEY_ALIAS
-      -Dandroid.injected.signing.key.password=$KEY_PASSWORD
+      -Pandroid.injected.signing.store.file=$KEYSTORE_PATH
+      -Pandroid.injected.signing.store.password=$KEYSTORE_PASSWORD
+      -Pandroid.injected.signing.key.alias=$KEY_ALIAS
+      -Pandroid.injected.signing.key.password=$KEY_PASSWORD
     # Extract version info from build.gradle.kts
     - export VERSION_NAME=$(grep 'versionName = ' app/build.gradle.kts | sed 's/.*"\(.*\)".*/\1/')
     - export VERSION_CODE=$(grep 'versionCode = ' app/build.gradle.kts | sed 's/.*= \(.*\)/\1/')

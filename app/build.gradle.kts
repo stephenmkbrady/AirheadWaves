@@ -38,11 +38,11 @@ android {
     signingConfigs {
         create("release") {
             // CI/CD will inject these properties at build time
-            System.getProperty("android.injected.signing.store.file")?.let {
-                storeFile = file(it)
-                storePassword = System.getProperty("android.injected.signing.store.password")
-                keyAlias = System.getProperty("android.injected.signing.key.alias")
-                keyPassword = System.getProperty("android.injected.signing.key.password")
+            if (project.hasProperty("android.injected.signing.store.file")) {
+                storeFile = file(project.property("android.injected.signing.store.file") as String)
+                storePassword = project.property("android.injected.signing.store.password") as String
+                keyAlias = project.property("android.injected.signing.key.alias") as String
+                keyPassword = project.property("android.injected.signing.key.password") as String
             }
         }
     }
