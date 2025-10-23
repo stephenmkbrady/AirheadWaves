@@ -26,19 +26,12 @@ curl --fail --request POST \
 # Use ref-based URL so it remains stable across rebuilds
 REF_BASED_APK_URL="${CI_PROJECT_URL}/-/jobs/artifacts/${CI_COMMIT_TAG}/raw/app/build/outputs/apk/release/${APK_NAME}?job=build_release"
 
-cat > asset_link.json <<EOF
-{
-  "name": "${APK_NAME}",
-  "url": "${REF_BASED_APK_URL}",
-  "link_type": "package"
-}
-EOF
-
 echo "Creating permanent release asset link"
-cat asset_link.json
 
 curl --fail --request POST \
   --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
-  --header "Content-Type: application/json" \
-  --data @asset_link.json \
+  --data "name=${APK_NAME}" \
+  --data "url=${REF_BASED_APK_URL}" \
+  --data "filepath=/${APK_NAME}" \
+  --data "link_type=package" \
   "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/releases/${CI_COMMIT_TAG}/assets/links"
