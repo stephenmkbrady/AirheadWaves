@@ -18,3 +18,7 @@ local.properties
 *.keystore
 *.jks
 keystore_base64.txt
+
+# APK metadata and binaries
+metadata/
+app/release/
