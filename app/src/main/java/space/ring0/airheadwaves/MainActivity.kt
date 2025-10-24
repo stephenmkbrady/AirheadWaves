@@ -268,12 +268,27 @@ fun MainScreen(
     var showNetworkInfo by remember { mutableStateOf(false) }
     val selectedTabIndex = if (streamMode == StreamMode.TRANSMIT) 0 else 1
 
-    Column(
-        modifier = Modifier.fillMaxSize(),
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        // Mode selector tabs
+    Box(modifier = Modifier.fillMaxSize()) {
+        // Info icon button in top right
+        IconButton(
+            onClick = { showNetworkInfo = true },
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(16.dp)
+        ) {
+            Icon(
+                Icons.Default.Info,
+                contentDescription = "Network Info",
+                tint = MaterialTheme.colorScheme.primary
+            )
+        }
+
+        Column(
+            modifier = Modifier.fillMaxSize(),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            // Mode selector tabs
         TabRow(
             selectedTabIndex = selectedTabIndex,
             modifier = Modifier.width(280.dp)
@@ -293,24 +308,7 @@ fun MainScreen(
         }
 
         Spacer(modifier = Modifier.height(16.dp))
-
-        // Status and Network Info button
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.Center,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text(text = stats, color = MaterialTheme.colorScheme.onBackground)
-            Spacer(modifier = Modifier.width(8.dp))
-            IconButton(onClick = { showNetworkInfo = true }) {
-                Icon(
-                    Icons.Default.Info,
-                    contentDescription = "Network Info",
-                    tint = MaterialTheme.colorScheme.primary
-                )
-            }
-        }
-
+        Text(text = stats, color = MaterialTheme.colorScheme.onBackground)
         Spacer(modifier = Modifier.height(16.dp))
 
         // Profile selector based on mode
@@ -416,17 +414,40 @@ fun MainScreen(
             valueRange = 0f..1f,
             modifier = Modifier.width(280.dp)
         )
+        }
     }
 
     // Network Info Dialog
     if (showNetworkInfo) {
         val networkInterfaces = remember { getNetworkInterfaces() }
+        val context = LocalContext.current
+        val versionName = context.packageManager.getPackageInfo(context.packageName, 0).versionName
+        val versionCode = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+            context.packageManager.getPackageInfo(context.packageName, 0).longVersionCode.toString()
+        } else {
+            @Suppress("DEPRECATION")
+            context.packageManager.getPackageInfo(context.packageName, 0).versionCode.toString()
+        }
+
         AlertDialog(
             onDismissRequest = { showNetworkInfo = false },
-            title = { Text("Device Network Information") },
+            title = { Text("App Information") },
             text = {
                 Column {
+                    // Version info
+                    Text("Version:", style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        text = "$versionName ($versionCode)",
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.padding(vertical = 4.dp)
+                    )
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    // Network info
                     if (networkInterfaces.isEmpty()) {
+                        Text("Active IP Addresses:", style = MaterialTheme.typography.titleSmall)
+                        Spacer(modifier = Modifier.height(4.dp))
                         Text("No active network interfaces found")
                     } else {
                         Text("Active IP Addresses:", style = MaterialTheme.typography.titleSmall)
