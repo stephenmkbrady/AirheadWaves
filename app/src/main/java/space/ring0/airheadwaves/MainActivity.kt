@@ -64,8 +64,11 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import space.ring0.airheadwaves.ui.theme.AirheadWavesTheme
+import space.ring0.airheadwaves.models.*
 import kotlinx.serialization.Serializable
 import java.util.UUID
+import androidx.compose.material3.TabRow
+import androidx.compose.material3.Tab
 
 @Serializable
 data class ServerProfile(
@@ -128,6 +131,13 @@ class MainActivity : ComponentActivity() {
             val selectedProfile by viewModel.selectedProfile.collectAsState()
             val visualizationEnabled by viewModel.visualizationEnabled.collectAsState()
 
+            // New v2.0 state
+            val streamMode by viewModel.streamMode.collectAsState()
+            val transmitProfiles by viewModel.transmitProfiles.collectAsState()
+            val selectedTransmitProfile by viewModel.selectedTransmitProfile.collectAsState()
+            val receiveProfiles by viewModel.receiveProfiles.collectAsState()
+            val selectedReceiveProfile by viewModel.selectedReceiveProfile.collectAsState()
+
             AirheadWavesTheme(darkTheme = isDarkTheme) {
                 val animatedColor by animateColorAsState(
                     targetValue = if (isServiceRunning && visualizationEnabled) {
@@ -149,9 +159,17 @@ class MainActivity : ComponentActivity() {
                                 currentVolume = streamVolume,
                                 profiles = profiles,
                                 selectedProfile = selectedProfile,
+                                streamMode = streamMode,
+                                transmitProfiles = transmitProfiles,
+                                selectedTransmitProfile = selectedTransmitProfile,
+                                receiveProfiles = receiveProfiles,
+                                selectedReceiveProfile = selectedReceiveProfile,
                                 onVolumeChange = { viewModel.updateStreamVolume(it) },
                                 onProfileSelected = { viewModel.selectProfile(it) },
-                                onStartStopClick = { startStopService(isServiceRunning) }
+                                onModeChange = { viewModel.updateStreamMode(it) },
+                                onTransmitProfileSelected = { viewModel.selectTransmitProfile(it) },
+                                onReceiveProfileSelected = { viewModel.selectReceiveProfile(it) },
+                                onStartStopClick = { startStopService(isServiceRunning, streamMode) }
                             )
                         }
                         composable("settings") { SettingsScreen(navController) }
@@ -178,12 +196,29 @@ class MainActivity : ComponentActivity() {
         viewModel.updateServiceRunning(AudioCaptureService.isRunning)
     }
 
-    private fun startStopService(isServiceRunning: Boolean) {
+    private fun startStopService(isServiceRunning: Boolean, mode: StreamMode) {
         if (isServiceRunning) {
+            // Stop whichever service is running
             stopService(Intent(this, AudioCaptureService::class.java))
+            stopService(Intent(this, AudioPlaybackService::class.java))
             // Service will update ViewModel state in onDestroy
         } else {
-            startMediaProjection.launch(mediaProjectionManager.createScreenCaptureIntent())
+            when (mode) {
+                StreamMode.TRANSMIT -> {
+                    // Start transmit mode (requires MediaProjection permission)
+                    startMediaProjection.launch(mediaProjectionManager.createScreenCaptureIntent())
+                }
+                StreamMode.RECEIVE -> {
+                    // Start receive mode (no permission needed)
+                    // TODO: Pass ReceiveProfile to service
+                    val serviceIntent = Intent(this, AudioPlaybackService::class.java).apply {
+                        action = "START"
+                        // TODO: Serialize ReceiveProfile and pass as extra
+                    }
+                    startService(serviceIntent)
+                    viewModel.updateServiceRunning(true)
+                }
+            }
         }
     }
 }
@@ -197,40 +232,113 @@ fun MainScreen(
     currentVolume: Float,
     profiles: List<ServerProfile>,
     selectedProfile: ServerProfile?,
+    streamMode: StreamMode,
+    transmitProfiles: List<TransmitProfile>,
+    selectedTransmitProfile: TransmitProfile?,
+    receiveProfiles: List<ReceiveProfile>,
+    selectedReceiveProfile: ReceiveProfile?,
     onVolumeChange: (Float) -> Unit,
     onProfileSelected: (ServerProfile) -> Unit,
+    onModeChange: (StreamMode) -> Unit,
+    onTransmitProfileSelected: (TransmitProfile) -> Unit,
+    onReceiveProfileSelected: (ReceiveProfile) -> Unit,
     onStartStopClick: () -> Unit
 ) {
     var expandedProfile by remember { mutableStateOf(false) }
+    val selectedTabIndex = if (streamMode == StreamMode.TRANSMIT) 0 else 1
 
     Column(
         modifier = Modifier.fillMaxSize(),
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
+        // Mode selector tabs
+        TabRow(
+            selectedTabIndex = selectedTabIndex,
+            modifier = Modifier.width(280.dp)
+        ) {
+            Tab(
+                selected = streamMode == StreamMode.TRANSMIT,
+                onClick = { if (!isServiceRunning) onModeChange(StreamMode.TRANSMIT) },
+                text = { Text("Transmit") },
+                enabled = !isServiceRunning
+            )
+            Tab(
+                selected = streamMode == StreamMode.RECEIVE,
+                onClick = { if (!isServiceRunning) onModeChange(StreamMode.RECEIVE) },
+                text = { Text("Receive") },
+                enabled = !isServiceRunning
+            )
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
         Text(text = stats, color = MaterialTheme.colorScheme.onBackground)
         Spacer(modifier = Modifier.height(16.dp))
 
-        if (profiles.isNotEmpty()) {
-            Box(modifier = Modifier.width(280.dp)) {
-                ExposedDropdownMenuBox(expanded = expandedProfile, onExpandedChange = { expandedProfile = !expandedProfile }) {
-                    OutlinedTextField(
-                        value = selectedProfile?.name ?: "Select a Profile",
-                        onValueChange = {},
-                        readOnly = true,
-                        label = { Text("Server Profile") },
-                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expandedProfile) },
-                        modifier = Modifier.menuAnchor(MenuAnchorType.PrimaryNotEditable)
-                    )
-                    ExposedDropdownMenu(expanded = expandedProfile, onDismissRequest = { expandedProfile = false }) {
-                        profiles.forEach { profile ->
-                            DropdownMenuItem(
-                                text = { Text(profile.name) },
-                                onClick = {
-                                    onProfileSelected(profile)
-                                    expandedProfile = false
-                                }
+        // Profile selector based on mode
+        when (streamMode) {
+            StreamMode.TRANSMIT -> {
+                if (transmitProfiles.isNotEmpty()) {
+                    Box(modifier = Modifier.width(280.dp)) {
+                        ExposedDropdownMenuBox(
+                            expanded = expandedProfile,
+                            onExpandedChange = { expandedProfile = !expandedProfile }
+                        ) {
+                            OutlinedTextField(
+                                value = selectedTransmitProfile?.name ?: "Select a Profile",
+                                onValueChange = {},
+                                readOnly = true,
+                                label = { Text("Transmit Profile") },
+                                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expandedProfile) },
+                                modifier = Modifier.menuAnchor(MenuAnchorType.PrimaryNotEditable)
                             )
+                            ExposedDropdownMenu(
+                                expanded = expandedProfile,
+                                onDismissRequest = { expandedProfile = false }
+                            ) {
+                                transmitProfiles.forEach { profile ->
+                                    DropdownMenuItem(
+                                        text = { Text(profile.name) },
+                                        onClick = {
+                                            onTransmitProfileSelected(profile)
+                                            expandedProfile = false
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            StreamMode.RECEIVE -> {
+                if (receiveProfiles.isNotEmpty()) {
+                    Box(modifier = Modifier.width(280.dp)) {
+                        ExposedDropdownMenuBox(
+                            expanded = expandedProfile,
+                            onExpandedChange = { expandedProfile = !expandedProfile }
+                        ) {
+                            OutlinedTextField(
+                                value = selectedReceiveProfile?.name ?: "Select a Profile",
+                                onValueChange = {},
+                                readOnly = true,
+                                label = { Text("Receive Profile") },
+                                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expandedProfile) },
+                                modifier = Modifier.menuAnchor(MenuAnchorType.PrimaryNotEditable)
+                            )
+                            ExposedDropdownMenu(
+                                expanded = expandedProfile,
+                                onDismissRequest = { expandedProfile = false }
+                            ) {
+                                receiveProfiles.forEach { profile ->
+                                    DropdownMenuItem(
+                                        text = { Text(profile.name) },
+                                        onClick = {
+                                            onReceiveProfileSelected(profile)
+                                            expandedProfile = false
+                                        }
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -239,9 +347,25 @@ fun MainScreen(
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        Button(onClick = onStartStopClick, enabled = selectedProfile != null) {
-            Text(text = if (isServiceRunning) "Stop Streaming" else "Start Streaming")
+        val canStart = when (streamMode) {
+            StreamMode.TRANSMIT -> selectedTransmitProfile != null
+            StreamMode.RECEIVE -> selectedReceiveProfile != null
         }
+
+        Button(onClick = onStartStopClick, enabled = canStart || isServiceRunning) {
+            Text(text = if (isServiceRunning) {
+                when (streamMode) {
+                    StreamMode.TRANSMIT -> "Stop Transmitting"
+                    StreamMode.RECEIVE -> "Stop Receiving"
+                }
+            } else {
+                when (streamMode) {
+                    StreamMode.TRANSMIT -> "Start Transmitting"
+                    StreamMode.RECEIVE -> "Start Receiving"
+                }
+            })
+        }
+
         Spacer(modifier = Modifier.height(16.dp))
         Button(onClick = { navController.navigate("settings") }) {
             Text(text = "Settings")
