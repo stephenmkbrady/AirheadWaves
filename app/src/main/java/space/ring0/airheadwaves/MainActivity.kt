@@ -173,10 +173,16 @@ class MainActivity : ComponentActivity() {
                             )
                         }
                         composable("settings") { SettingsScreen(navController) }
-                        composable("profile_settings") {
+                        composable("transmit_profile_settings") {
                             ProfileSettingsScreen(
                                 profiles = profiles,
                                 onSave = { viewModel.updateProfiles(it) }
+                            )
+                        }
+                        composable("receive_profile_settings") {
+                            ReceiveProfileSettingsScreen(
+                                profiles = receiveProfiles,
+                                onSave = { viewModel.updateReceiveProfiles(it) }
                             )
                         }
                         composable("app_settings") {
@@ -390,10 +396,19 @@ fun SettingsScreen(navController: NavController) {
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Button(onClick = { navController.navigate("profile_settings") }) {
-            Text(text = "Manage Server Profiles")
+        Text(
+            text = "Profile Management",
+            style = MaterialTheme.typography.titleLarge,
+            modifier = Modifier.padding(bottom = 16.dp)
+        )
+        Button(onClick = { navController.navigate("transmit_profile_settings") }) {
+            Text(text = "Manage Transmit Profiles")
         }
         Spacer(modifier = Modifier.height(16.dp))
+        Button(onClick = { navController.navigate("receive_profile_settings") }) {
+            Text(text = "Manage Receive Profiles")
+        }
+        Spacer(modifier = Modifier.height(32.dp))
         Button(onClick = { navController.navigate("app_settings") }) {
             Text(text = "App Settings")
         }
@@ -636,6 +651,168 @@ fun ProfileEditor(
                         modifier = Modifier.weight(1f)
                     )
                     Text("%.1f dB".format(treble), modifier = Modifier.width(60.dp))
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ReceiveProfileSettingsScreen(
+    profiles: List<ReceiveProfile>,
+    onSave: (List<ReceiveProfile>) -> Unit
+) {
+    var editingProfiles by remember { mutableStateOf(profiles) }
+
+    // Save immediately when editingProfiles changes
+    LaunchedEffect(editingProfiles) {
+        if (editingProfiles != profiles) {
+            onSave(editingProfiles)
+        }
+    }
+
+    Scaffold(
+        floatingActionButton = {
+            FloatingActionButton(onClick = {
+                val newProfileName = "Receiver ${editingProfiles.size + 1}"
+                editingProfiles = editingProfiles + ReceiveProfile(
+                    id = UUID.randomUUID().toString(),
+                    name = newProfileName,
+                    listenPort = 8888
+                )
+            }) {
+                Icon(Icons.Default.Add, contentDescription = "Add Profile")
+            }
+        }
+    ) {
+        LazyColumn(modifier = Modifier.padding(it)) {
+            items(editingProfiles, key = { it.id }) { profile ->
+                ReceiveProfileEditor(profile, onProfileChange = { updatedProfile ->
+                    editingProfiles = editingProfiles.map { p ->
+                        if (p.id == profile.id) updatedProfile else p
+                    }
+                }, onDelete = {
+                    editingProfiles = editingProfiles.filter { p -> p.id != profile.id }
+                })
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ReceiveProfileEditor(
+    profile: ReceiveProfile,
+    onProfileChange: (ReceiveProfile) -> Unit,
+    onDelete: () -> Unit
+) {
+    var name by remember { mutableStateOf(profile.name) }
+    var listenPort by remember { mutableStateOf(profile.listenPort.toString()) }
+    var bass by remember { mutableFloatStateOf(profile.bass) }
+    var treble by remember { mutableFloatStateOf(profile.treble) }
+    var volume by remember { mutableFloatStateOf(profile.volume) }
+    var allowUnknownTransmitters by remember { mutableStateOf(profile.allowUnknownTransmitters) }
+    var allowedIPs by remember { mutableStateOf(profile.allowedTransmitterIPs.joinToString("\n")) }
+    var isExpanded by remember { mutableStateOf(false) }
+
+    LaunchedEffect(name, listenPort, bass, treble, volume, allowUnknownTransmitters, allowedIPs) {
+        val ipList = if (allowedIPs.isBlank()) emptyList() else allowedIPs.split("\n").map { it.trim() }.filter { it.isNotEmpty() }
+        onProfileChange(profile.copy(
+            name = name,
+            listenPort = listenPort.toIntOrNull() ?: 8888,
+            bass = bass,
+            treble = treble,
+            volume = volume,
+            allowUnknownTransmitters = allowUnknownTransmitters,
+            allowedTransmitterIPs = ipList
+        ))
+    }
+
+    Card(modifier = Modifier.padding(16.dp)) {
+        Column(
+            modifier = Modifier
+                .padding(16.dp)
+                .animateContentSize()
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("Profile Name") },
+                    modifier = Modifier.weight(1f)
+                )
+                IconButton(onClick = { isExpanded = !isExpanded }) {
+                    Icon(if (isExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore, contentDescription = if (isExpanded) "Collapse" else "Expand")
+                }
+                IconButton(onClick = onDelete) {
+                    Icon(Icons.Default.Delete, contentDescription = "Delete Profile")
+                }
+            }
+            if (isExpanded) {
+                Spacer(modifier = Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = listenPort,
+                    onValueChange = { listenPort = it },
+                    label = { Text("Listen Port") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                Text("Audio Effects", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 16.dp, bottom = 8.dp))
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Volume", modifier = Modifier.width(80.dp))
+                    Slider(
+                        value = volume,
+                        onValueChange = { volume = it },
+                        valueRange = 0f..2f,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Text("%.1f".format(volume), modifier = Modifier.width(60.dp))
+                }
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Bass", modifier = Modifier.width(80.dp))
+                    Slider(
+                        value = bass,
+                        onValueChange = { bass = it },
+                        valueRange = -15f..15f,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Text("%.1f dB".format(bass), modifier = Modifier.width(60.dp))
+                }
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Treble", modifier = Modifier.width(80.dp))
+                    Slider(
+                        value = treble,
+                        onValueChange = { treble = it },
+                        valueRange = -15f..15f,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Text("%.1f dB".format(treble), modifier = Modifier.width(60.dp))
+                }
+
+                Text("Access Control", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 16.dp, bottom = 8.dp))
+
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                    Text("Allow Unknown Transmitters", modifier = Modifier.weight(1f))
+                    Switch(
+                        checked = allowUnknownTransmitters,
+                        onCheckedChange = { allowUnknownTransmitters = it }
+                    )
+                }
+
+                if (!allowUnknownTransmitters) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = allowedIPs,
+                        onValueChange = { allowedIPs = it },
+                        label = { Text("Allowed IP Addresses (one per line)") },
+                        modifier = Modifier.fillMaxWidth(),
+                        minLines = 3,
+                        maxLines = 6
+                    )
                 }
             }
         }
