@@ -275,6 +275,7 @@ public class AudioCaptureService extends Service {
                     if (read > 0) {
                         calculateAndBroadcastAudioLevel(inputBuffer, read);
                         applyAudioEffects(inputBuffer, read);
+                        inputBuffer.position(0);  // Reset position after effects
                         mediaCodec.queueInputBuffer(inputBufferIndex, 0, read, 0, 0);
                     }
                 }
