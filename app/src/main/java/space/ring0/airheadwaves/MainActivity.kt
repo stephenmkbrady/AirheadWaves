@@ -90,17 +90,12 @@ class MainActivity : ComponentActivity() {
 
     private val startMediaProjection = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
         if (it.resultCode == RESULT_OK) {
-            viewModel.selectedProfile.value?.let { profile ->
+            viewModel.selectedTransmitProfile.value?.let { profile ->
+                val profileJson = ProfileSerializer.serializeTransmitProfile(profile)
                 val serviceIntent = Intent(this, AudioCaptureService::class.java).apply {
                     putExtra(AudioCaptureService.EXTRA_RESULT_CODE, it.resultCode)
                     putExtra(AudioCaptureService.EXTRA_DATA, it.data)
-                    putExtra("SERVER_IP", profile.ipAddress)
-                    putExtra("SERVER_PORT", profile.port)
-                    putExtra("BITRATE", profile.bitrate)
-                    putExtra("SAMPLE_RATE", profile.sampleRate)
-                    putExtra("CHANNEL_CONFIG", profile.channelConfig)
-                    putExtra("BASS", profile.bass)
-                    putExtra("TREBLE", profile.treble)
+                    putExtra("PROFILE_JSON", profileJson)
                     putExtra(AudioCaptureService.EXTRA_VOLUME, viewModel.streamVolume.value)
                 }
                 startForegroundService(serviceIntent)
@@ -127,8 +122,6 @@ class MainActivity : ComponentActivity() {
             val stats by viewModel.stats.collectAsState()
             val streamVolume by viewModel.streamVolume.collectAsState()
             val audioLevel by viewModel.audioLevel.collectAsState()
-            val profiles by viewModel.profiles.collectAsState()
-            val selectedProfile by viewModel.selectedProfile.collectAsState()
             val visualizationEnabled by viewModel.visualizationEnabled.collectAsState()
 
             // New v2.0 state
@@ -157,15 +150,12 @@ class MainActivity : ComponentActivity() {
                                 isServiceRunning = isServiceRunning,
                                 stats = stats,
                                 currentVolume = streamVolume,
-                                profiles = profiles,
-                                selectedProfile = selectedProfile,
                                 streamMode = streamMode,
                                 transmitProfiles = transmitProfiles,
                                 selectedTransmitProfile = selectedTransmitProfile,
                                 receiveProfiles = receiveProfiles,
                                 selectedReceiveProfile = selectedReceiveProfile,
                                 onVolumeChange = { viewModel.updateStreamVolume(it) },
-                                onProfileSelected = { viewModel.selectProfile(it) },
                                 onModeChange = { viewModel.updateStreamMode(it) },
                                 onTransmitProfileSelected = { viewModel.selectTransmitProfile(it) },
                                 onReceiveProfileSelected = { viewModel.selectReceiveProfile(it) },
@@ -174,9 +164,9 @@ class MainActivity : ComponentActivity() {
                         }
                         composable("settings") { SettingsScreen(navController) }
                         composable("transmit_profile_settings") {
-                            ProfileSettingsScreen(
-                                profiles = profiles,
-                                onSave = { viewModel.updateProfiles(it) }
+                            TransmitProfileSettingsScreen(
+                                profiles = transmitProfiles,
+                                onSave = { viewModel.updateTransmitProfiles(it) }
                             )
                         }
                         composable("receive_profile_settings") {
@@ -238,15 +228,12 @@ fun MainScreen(
     isServiceRunning: Boolean,
     stats: String,
     currentVolume: Float,
-    profiles: List<ServerProfile>,
-    selectedProfile: ServerProfile?,
     streamMode: StreamMode,
     transmitProfiles: List<TransmitProfile>,
     selectedTransmitProfile: TransmitProfile?,
     receiveProfiles: List<ReceiveProfile>,
     selectedReceiveProfile: ReceiveProfile?,
     onVolumeChange: (Float) -> Unit,
-    onProfileSelected: (ServerProfile) -> Unit,
     onModeChange: (StreamMode) -> Unit,
     onTransmitProfileSelected: (TransmitProfile) -> Unit,
     onReceiveProfileSelected: (ReceiveProfile) -> Unit,
@@ -813,6 +800,251 @@ fun ReceiveProfileEditor(
                         minLines = 3,
                         maxLines = 6
                     )
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun TransmitProfileSettingsScreen(
+    profiles: List<TransmitProfile>,
+    onSave: (List<TransmitProfile>) -> Unit
+) {
+    var editingProfiles by remember { mutableStateOf(profiles) }
+
+    // Save immediately when editingProfiles changes
+    LaunchedEffect(editingProfiles) {
+        if (editingProfiles != profiles) {
+            onSave(editingProfiles)
+        }
+    }
+
+    Scaffold(
+        floatingActionButton = {
+            FloatingActionButton(onClick = {
+                val newProfileName = "Transmitter ${editingProfiles.size + 1}"
+                editingProfiles = editingProfiles + TransmitProfile(
+                    id = UUID.randomUUID().toString(),
+                    name = newProfileName,
+                    destinations = listOf(Destination("192.168.1.100", 8888)),
+                    bitrate = 128000,
+                    sampleRate = 44100,
+                    channelConfig = "Stereo"
+                )
+            }) {
+                Icon(Icons.Default.Add, contentDescription = "Add Profile")
+            }
+        }
+    ) {
+        LazyColumn(modifier = Modifier.padding(it)) {
+            items(editingProfiles, key = { it.id }) { profile ->
+                TransmitProfileEditor(profile, onProfileChange = { updatedProfile ->
+                    editingProfiles = editingProfiles.map { p ->
+                        if (p.id == profile.id) updatedProfile else p
+                    }
+                }, onDelete = {
+                    editingProfiles = editingProfiles.filter { p -> p.id != profile.id }
+                })
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun TransmitProfileEditor(
+    profile: TransmitProfile,
+    onProfileChange: (TransmitProfile) -> Unit,
+    onDelete: () -> Unit
+) {
+    var name by remember { mutableStateOf(profile.name) }
+    var destinations by remember { mutableStateOf(profile.destinations) }
+    var bitrate by remember { mutableIntStateOf(profile.bitrate) }
+    var sampleRate by remember { mutableIntStateOf(profile.sampleRate) }
+    var channelConfig by remember { mutableStateOf(profile.channelConfig) }
+    var bass by remember { mutableFloatStateOf(profile.bass) }
+    var treble by remember { mutableFloatStateOf(profile.treble) }
+    var isExpanded by remember { mutableStateOf(false) }
+
+    LaunchedEffect(name, destinations, bitrate, sampleRate, channelConfig, bass, treble) {
+        onProfileChange(profile.copy(
+            name = name,
+            destinations = destinations,
+            bitrate = bitrate,
+            sampleRate = sampleRate,
+            channelConfig = channelConfig,
+            bass = bass,
+            treble = treble
+        ))
+    }
+
+    Card(modifier = Modifier.padding(16.dp)) {
+        Column(
+            modifier = Modifier
+                .padding(16.dp)
+                .animateContentSize()
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("Profile Name") },
+                    modifier = Modifier.weight(1f)
+                )
+                IconButton(onClick = { isExpanded = !isExpanded }) {
+                    Icon(if (isExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore, contentDescription = if (isExpanded) "Collapse" else "Expand")
+                }
+                IconButton(onClick = onDelete) {
+                    Icon(Icons.Default.Delete, contentDescription = "Delete Profile")
+                }
+            }
+            if (isExpanded) {
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Text("Destinations", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 8.dp, bottom = 8.dp))
+
+                destinations.forEachIndexed { index, destination ->
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        var destIp by remember { mutableStateOf(destination.ipAddress) }
+                        var destPort by remember { mutableStateOf(destination.port.toString()) }
+
+                        OutlinedTextField(
+                            value = destIp,
+                            onValueChange = {
+                                destIp = it
+                                destinations = destinations.toMutableList().apply {
+                                    this[index] = destination.copy(ipAddress = it)
+                                }
+                            },
+                            label = { Text("IP Address") },
+                            modifier = Modifier.weight(2f)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        OutlinedTextField(
+                            value = destPort,
+                            onValueChange = {
+                                destPort = it
+                                destinations = destinations.toMutableList().apply {
+                                    this[index] = destination.copy(port = it.toIntOrNull() ?: 8888)
+                                }
+                            },
+                            label = { Text("Port") },
+                            modifier = Modifier.weight(1f)
+                        )
+                        IconButton(onClick = {
+                            destinations = destinations.filterIndexed { i, _ -> i != index }
+                        }) {
+                            Icon(Icons.Default.Delete, contentDescription = "Delete Destination")
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(4.dp))
+                }
+
+                Button(
+                    onClick = {
+                        destinations = destinations + Destination("192.168.1.100", 8888)
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Default.Add, contentDescription = "Add Destination")
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Add Destination")
+                }
+
+                val bitrates = listOf(96000, 128000, 192000, 256000, 320000)
+                var expandedBitrate by remember { mutableStateOf(false) }
+                Box(modifier = Modifier.fillMaxWidth()) {
+                    ExposedDropdownMenuBox(expanded = expandedBitrate, onExpandedChange = { expandedBitrate = !expandedBitrate }) {
+                        OutlinedTextField(
+                            value = "${bitrate / 1000} kbps",
+                            onValueChange = {},
+                            readOnly = true,
+                            label = { Text("Bitrate") },
+                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expandedBitrate) },
+                            modifier = Modifier.menuAnchor(MenuAnchorType.PrimaryNotEditable)
+                        )
+                        ExposedDropdownMenu(expanded = expandedBitrate, onDismissRequest = { expandedBitrate = false }) {
+                            bitrates.forEach { b ->
+                                DropdownMenuItem(text = { Text("${b / 1000} kbps") }, onClick = {
+                                    bitrate = b
+                                    expandedBitrate = false
+                                })
+                            }
+                        }
+                    }
+                }
+
+                val sampleRates = listOf(22050, 44100, 48000)
+                var expandedSampleRate by remember { mutableStateOf(false) }
+                Box(modifier = Modifier.fillMaxWidth()) {
+                    ExposedDropdownMenuBox(expanded = expandedSampleRate, onExpandedChange = { expandedSampleRate = !expandedSampleRate }) {
+                        OutlinedTextField(
+                            value = "$sampleRate Hz",
+                            onValueChange = {},
+                            readOnly = true,
+                            label = { Text("Sample Rate") },
+                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expandedSampleRate) },
+                            modifier = Modifier.menuAnchor(MenuAnchorType.PrimaryNotEditable)
+                        )
+                        ExposedDropdownMenu(expanded = expandedSampleRate, onDismissRequest = { expandedSampleRate = false }) {
+                            sampleRates.forEach { sr ->
+                                DropdownMenuItem(text = { Text("$sr Hz") }, onClick = {
+                                    sampleRate = sr
+                                    expandedSampleRate = false
+                                })
+                            }
+                        }
+                    }
+                }
+
+                val channelConfigs = listOf("Mono", "Stereo")
+                var expandedChannelConfig by remember { mutableStateOf(false) }
+                Box(modifier = Modifier.fillMaxWidth()) {
+                    ExposedDropdownMenuBox(expanded = expandedChannelConfig, onExpandedChange = { expandedChannelConfig = !expandedChannelConfig }) {
+                        OutlinedTextField(
+                            value = channelConfig,
+                            onValueChange = {},
+                            readOnly = true,
+                            label = { Text("Channels") },
+                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expandedChannelConfig) },
+                            modifier = Modifier.menuAnchor(MenuAnchorType.PrimaryNotEditable)
+                        )
+                        ExposedDropdownMenu(expanded = expandedChannelConfig, onDismissRequest = { expandedChannelConfig = false }) {
+                            channelConfigs.forEach { cc ->
+                                DropdownMenuItem(text = { Text(cc) }, onClick = {
+                                    channelConfig = cc
+                                    expandedChannelConfig = false
+                                })
+                            }
+                        }
+                    }
+                }
+
+                Text("Tone Control", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 16.dp, bottom = 8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Bass", modifier = Modifier.width(60.dp))
+                    Slider(
+                        value = bass,
+                        onValueChange = { bass = it },
+                        valueRange = -15f..15f,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Text("%.1f dB".format(bass), modifier = Modifier.width(60.dp))
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Treble", modifier = Modifier.width(60.dp))
+                    Slider(
+                        value = treble,
+                        onValueChange = { treble = it },
+                        valueRange = -15f..15f,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Text("%.1f dB".format(treble), modifier = Modifier.width(60.dp))
                 }
             }
         }

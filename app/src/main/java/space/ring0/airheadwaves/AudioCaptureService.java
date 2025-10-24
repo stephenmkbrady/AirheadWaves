@@ -40,8 +40,7 @@ public class AudioCaptureService extends Service {
     private AudioRecord audioRecord;
     private MediaCodec mediaCodec;
     private Thread captureThread;
-    private String serverIp;
-    private int serverPort;
+    private space.ring0.airheadwaves.models.TransmitProfile profile;
     private int bitrate;
     private int sampleRate;
     private String channelConfig;
@@ -75,11 +74,25 @@ public class AudioCaptureService extends Service {
 
         int resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, -1);
         Intent data = intent.getParcelableExtra(EXTRA_DATA);
-        serverIp = intent.getStringExtra("SERVER_IP");
-        serverPort = intent.getIntExtra("SERVER_PORT", 8888);
-        bitrate = intent.getIntExtra("BITRATE", 128000);
-        sampleRate = intent.getIntExtra("SAMPLE_RATE", 44100);
-        channelConfig = intent.getStringExtra("CHANNEL_CONFIG");
+
+        // Deserialize TransmitProfile from JSON
+        String profileJson = intent.getStringExtra("PROFILE_JSON");
+        if (profileJson != null) {
+            try {
+                profile = ProfileSerializer.deserializeTransmitProfile(profileJson);
+                bitrate = profile.getBitrate();
+                sampleRate = profile.getSampleRate();
+                channelConfig = profile.getChannelConfig();
+            } catch (Exception e) {
+                Log.e(TAG, "Failed to deserialize profile", e);
+                stopSelf();
+                return START_NOT_STICKY;
+            }
+        } else {
+            Log.e(TAG, "No profile provided");
+            stopSelf();
+            return START_NOT_STICKY;
+        }
 
         mediaProjection = mediaProjectionManager.getMediaProjection(resultCode, data);
 
@@ -218,8 +231,31 @@ public class AudioCaptureService extends Service {
     }
 
     private void encodeAndStreamAudio() {
-        try (Socket socket = new Socket(serverIp, serverPort)) {
-            viewModel.updateStats("Connected");
+        // Create sockets for all destinations
+        java.util.List<space.ring0.airheadwaves.models.Destination> destinations = profile.getDestinations();
+        java.util.List<Socket> sockets = new java.util.ArrayList<>();
+        java.util.List<String> connected = new java.util.ArrayList<>();
+
+        // Connect to all destinations
+        for (space.ring0.airheadwaves.models.Destination dest : destinations) {
+            try {
+                Socket socket = new Socket(dest.getIpAddress(), dest.getPort());
+                sockets.add(socket);
+                connected.add(dest.getIpAddress() + ":" + dest.getPort());
+                Log.i(TAG, "Connected to " + dest.getIpAddress() + ":" + dest.getPort());
+            } catch (IOException e) {
+                Log.e(TAG, "Failed to connect to " + dest.getIpAddress() + ":" + dest.getPort(), e);
+            }
+        }
+
+        if (sockets.isEmpty()) {
+            viewModel.updateStats("Error: No destinations connected");
+            return;
+        }
+
+        viewModel.updateStats("Connected to " + sockets.size() + " destination(s)");
+
+        try {
             MediaCodec.BufferInfo bufferInfo = new MediaCodec.BufferInfo();
             long lastStatTime = System.currentTimeMillis();
             long bytesSent = 0;
@@ -245,15 +281,37 @@ public class AudioCaptureService extends Service {
                     byte[] outData = new byte[outPacketSizeWithHeader];
 
                     addAdtsHeader(outData, outPacketSizeWithHeader);
-
                     outputBuffer.get(outData, 7, outPacketSize);
 
-                    socket.getOutputStream().write(outData);
+                    // Send to all connected destinations
+                    for (int i = sockets.size() - 1; i >= 0; i--) {
+                        Socket socket = sockets.get(i);
+                        try {
+                            socket.getOutputStream().write(outData);
+                        } catch (IOException e) {
+                            Log.e(TAG, "Failed to send to " + connected.get(i) + ", disconnecting", e);
+                            try {
+                                socket.close();
+                            } catch (IOException ex) {
+                                // Ignore
+                            }
+                            sockets.remove(i);
+                            connected.remove(i);
+                        }
+                    }
+
+                    // Check if all destinations disconnected
+                    if (sockets.isEmpty()) {
+                        Log.e(TAG, "All destinations disconnected");
+                        viewModel.updateStats("Error: All destinations disconnected");
+                        return;
+                    }
+
                     bytesSent += outPacketSizeWithHeader;
 
                     if (System.currentTimeMillis() - lastStatTime > 1000) {
                         long bps = (bytesSent * 8) / ((System.currentTimeMillis() - lastStatTime) / 1000);
-                        viewModel.updateStats("Connected\n" + bps / 1000 + " kbps");
+                        viewModel.updateStats("Connected to " + sockets.size() + " destination(s)\n" + bps / 1000 + " kbps");
                         lastStatTime = System.currentTimeMillis();
                         bytesSent = 0;
                     }
@@ -262,9 +320,18 @@ public class AudioCaptureService extends Service {
                     outputBufferIndex = mediaCodec.dequeueOutputBuffer(bufferInfo, 0);
                 }
             }
-        } catch (IOException e) {
+        } catch (Exception e) {
             Log.e(TAG, "Error while streaming audio", e);
             viewModel.updateStats("Error: " + e.getMessage());
+        } finally {
+            // Close all sockets
+            for (Socket socket : sockets) {
+                try {
+                    socket.close();
+                } catch (IOException e) {
+                    Log.e(TAG, "Error closing socket", e);
+                }
+            }
         }
     }
 
