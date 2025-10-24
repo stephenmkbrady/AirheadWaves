@@ -210,13 +210,15 @@ class MainActivity : ComponentActivity() {
                 }
                 StreamMode.RECEIVE -> {
                     // Start receive mode (no permission needed)
-                    // TODO: Pass ReceiveProfile to service
-                    val serviceIntent = Intent(this, AudioPlaybackService::class.java).apply {
-                        action = "START"
-                        // TODO: Serialize ReceiveProfile and pass as extra
+                    viewModel.selectedReceiveProfile.value?.let { profile ->
+                        val profileJson = ProfileSerializer.serializeReceiveProfile(profile)
+                        val serviceIntent = Intent(this, AudioPlaybackService::class.java).apply {
+                            action = "START"
+                            putExtra("PROFILE_JSON", profileJson)
+                        }
+                        startService(serviceIntent)
+                        viewModel.updateServiceRunning(true)
                     }
-                    startService(serviceIntent)
-                    viewModel.updateServiceRunning(true)
                 }
             }
         }

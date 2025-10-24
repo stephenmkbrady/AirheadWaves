@@ -27,6 +27,7 @@ import java.io.InputStream;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -78,17 +79,19 @@ public class AudioPlaybackService extends Service {
 
         String action = intent.getAction();
         if ("START".equals(action)) {
-            // Get profile from intent (serialized)
+            // Get profile from intent (serialized as JSON)
             String profileJson = intent.getStringExtra("PROFILE_JSON");
             if (profileJson != null) {
                 try {
-                    // TODO: Deserialize ReceiveProfile from JSON
-                    // For now, create a default profile
-                    startReceiving(createDefaultProfile());
+                    ReceiveProfile profile = ProfileSerializer.deserializeReceiveProfile(profileJson);
+                    startReceiving(profile);
                 } catch (Exception e) {
                     Log.e(TAG, "Failed to parse profile", e);
                     stopSelf();
                 }
+            } else {
+                // No profile provided, use default
+                startReceiving(createDefaultProfile());
             }
         } else if ("STOP".equals(action)) {
             stopReceiving();
@@ -98,9 +101,22 @@ public class AudioPlaybackService extends Service {
     }
 
     private ReceiveProfile createDefaultProfile() {
-        // TODO: Properly deserialize from intent
-        // This is a placeholder
-        return null;
+        // Create a default profile as fallback
+        return new ReceiveProfile(
+            java.util.UUID.randomUUID().toString(),
+            "Default Receiver",
+            8888,
+            space.ring0.airheadwaves.models.OutputDevice.AUTO,
+            space.ring0.airheadwaves.models.BufferSize.BALANCED,
+            0f,
+            0f,
+            1.0f,
+            true,
+            java.util.Collections.emptyList(),
+            true,
+            null,
+            null
+        );
     }
 
     private void startReceiving(ReceiveProfile profile) {
