@@ -55,6 +55,10 @@ public class AudioPlaybackService extends Service {
     private AudioTrack audioTrack;
     private ReceiveProfile profile;
 
+    // Audio effects
+    private BiquadFilter bassFilter;
+    private BiquadFilter trebleFilter;
+
     // Stream state
     private int detectedSampleRate = 44100;
     private int detectedChannels = 2;
@@ -261,10 +265,29 @@ public class AudioPlaybackService extends Service {
             );
 
             audioTrack.play();
+
+            // Initialize audio effects filters
+            initializeFilters();
+
             Log.i(TAG, "Audio components initialized: " + detectedSampleRate + "Hz, " + detectedChannels + " channels");
 
         } catch (IOException e) {
             Log.e(TAG, "Failed to initialize audio components", e);
+        }
+    }
+
+    private void initializeFilters() {
+        bassFilter = new BiquadFilter(detectedSampleRate);
+        trebleFilter = new BiquadFilter(detectedSampleRate);
+
+        // Apply current profile settings
+        if (profile != null) {
+            bassFilter.setLowShelf(profile.getBass(), 200.0f);  // Bass at 200Hz
+            trebleFilter.setHighShelf(profile.getTreble(), 3000.0f);  // Treble at 3000Hz
+        } else {
+            // Default: no effect (0dB)
+            bassFilter.setLowShelf(0.0f, 200.0f);
+            trebleFilter.setHighShelf(0.0f, 3000.0f);
         }
     }
 
@@ -369,7 +392,8 @@ public class AudioPlaybackService extends Service {
                     byte[] pcmData = new byte[bufferInfo.size];
                     outputBuffer.get(pcmData);
 
-                    // TODO: Apply audio effects (bass/treble/volume)
+                    // Apply audio effects (bass/treble/volume)
+                    applyAudioEffects(pcmData, pcmData.length);
 
                     // Play PCM data through AudioTrack
                     if (audioTrack != null) {
@@ -383,6 +407,46 @@ public class AudioPlaybackService extends Service {
 
         } catch (Exception e) {
             Log.e(TAG, "Error decoding AAC frame", e);
+        }
+    }
+
+    private void applyAudioEffects(byte[] pcmData, int length) {
+        if (bassFilter == null || trebleFilter == null) {
+            return;
+        }
+
+        // Convert byte array to samples (16-bit PCM)
+        ByteBuffer buffer = ByteBuffer.wrap(pcmData);
+        buffer.order(ByteOrder.LITTLE_ENDIAN);
+
+        int numSamples = length / 2;  // 16-bit = 2 bytes per sample
+
+        for (int i = 0; i < numSamples; i++) {
+            // Read 16-bit sample
+            short sample = buffer.getShort(i * 2);
+
+            // Convert to float (-1.0 to 1.0)
+            float floatSample = sample / 32768.0f;
+
+            // Apply bass filter
+            floatSample = bassFilter.process(floatSample);
+
+            // Apply treble filter
+            floatSample = trebleFilter.process(floatSample);
+
+            // Apply volume
+            if (profile != null) {
+                floatSample *= profile.getVolume();
+            }
+
+            // Clamp to valid range
+            floatSample = Math.max(-1.0f, Math.min(1.0f, floatSample));
+
+            // Convert back to 16-bit
+            short outputSample = (short) (floatSample * 32767.0f);
+
+            // Write back to buffer
+            buffer.putShort(i * 2, outputSample);
         }
     }
 
