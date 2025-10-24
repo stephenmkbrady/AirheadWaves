@@ -69,6 +69,10 @@ import kotlinx.serialization.Serializable
 import java.util.UUID
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Tab
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.TextButton
+import androidx.compose.material.icons.filled.Info
+import java.net.NetworkInterface
 
 @Serializable
 data class ServerProfile(
@@ -221,6 +225,27 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+fun getNetworkInterfaces(): List<Pair<String, String>> {
+    val interfaces = mutableListOf<Pair<String, String>>()
+    try {
+        NetworkInterface.getNetworkInterfaces()?.toList()?.forEach { networkInterface ->
+            if (networkInterface.isUp && !networkInterface.isLoopback) {
+                networkInterface.inetAddresses?.toList()?.forEach { inetAddress ->
+                    val address = inetAddress.hostAddress ?: return@forEach
+                    // Filter out IPv6 addresses for simplicity
+                    if (!address.contains(":")) {
+                        val name = networkInterface.displayName ?: networkInterface.name
+                        interfaces.add(Pair(name, address))
+                    }
+                }
+            }
+        }
+    } catch (e: Exception) {
+        // Ignore errors
+    }
+    return interfaces
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainScreen(
@@ -240,6 +265,7 @@ fun MainScreen(
     onStartStopClick: () -> Unit
 ) {
     var expandedProfile by remember { mutableStateOf(false) }
+    var showNetworkInfo by remember { mutableStateOf(false) }
     val selectedTabIndex = if (streamMode == StreamMode.TRANSMIT) 0 else 1
 
     Column(
@@ -267,7 +293,24 @@ fun MainScreen(
         }
 
         Spacer(modifier = Modifier.height(16.dp))
-        Text(text = stats, color = MaterialTheme.colorScheme.onBackground)
+
+        // Status and Network Info button
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.Center,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text(text = stats, color = MaterialTheme.colorScheme.onBackground)
+            Spacer(modifier = Modifier.width(8.dp))
+            IconButton(onClick = { showNetworkInfo = true }) {
+                Icon(
+                    Icons.Default.Info,
+                    contentDescription = "Network Info",
+                    tint = MaterialTheme.colorScheme.primary
+                )
+            }
+        }
+
         Spacer(modifier = Modifier.height(16.dp))
 
         // Profile selector based on mode
@@ -372,6 +415,43 @@ fun MainScreen(
             onValueChange = { onVolumeChange(it) },
             valueRange = 0f..1f,
             modifier = Modifier.width(280.dp)
+        )
+    }
+
+    // Network Info Dialog
+    if (showNetworkInfo) {
+        val networkInterfaces = remember { getNetworkInterfaces() }
+        AlertDialog(
+            onDismissRequest = { showNetworkInfo = false },
+            title = { Text("Device Network Information") },
+            text = {
+                Column {
+                    if (networkInterfaces.isEmpty()) {
+                        Text("No active network interfaces found")
+                    } else {
+                        Text("Active IP Addresses:", style = MaterialTheme.typography.titleSmall)
+                        Spacer(modifier = Modifier.height(8.dp))
+                        networkInterfaces.forEach { (name, address) ->
+                            Text(
+                                text = "$name: $address",
+                                style = MaterialTheme.typography.bodyMedium,
+                                modifier = Modifier.padding(vertical = 4.dp)
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = "Use these IP addresses when configuring transmit profiles on other devices.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showNetworkInfo = false }) {
+                    Text("Close")
+                }
+            }
         )
     }
 }

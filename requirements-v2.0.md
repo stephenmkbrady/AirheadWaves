@@ -186,6 +186,14 @@ This document covers Phase 1 and Phase 2 of the receive mode implementation:
 - Transmit mode → Show transmit profiles only
 - Receive mode → Show receive profiles only
 
+#### 3.4.2a Device Network Information
+**REQ-UI-002a**: The application SHALL display device network information
+- Show all active network interface IP addresses
+- Display in an easily accessible info view/dialog
+- Include interface type (WiFi, Ethernet, etc.) when available
+- Help users configure receiver IP addresses for transmit profiles
+- Accessible from main screen or settings
+
 #### 3.4.3 Status Display
 **REQ-UI-003**: Status display SHALL show mode-specific information
 
