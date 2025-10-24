@@ -57,6 +57,8 @@ public class AudioPlaybackService extends Service {
     private MediaCodec decoder;
     private AudioTrack audioTrack;
     private ReceiveProfile profile;
+    private AudioManager audioManager;
+    private AudioManager.OnAudioFocusChangeListener audioFocusChangeListener;
 
     // Audio effects
     private BiquadFilter bassFilter;
@@ -66,6 +68,8 @@ public class AudioPlaybackService extends Service {
     private int detectedSampleRate = 44100;
     private int detectedChannels = 2;
     private String connectedClientIP;
+    private boolean hasAudioFocus = false;
+    private float volumeBeforeDuck = 1.0f;
 
     // ViewModel for UI updates
     private MainViewModel viewModel;
@@ -76,7 +80,84 @@ public class AudioPlaybackService extends Service {
         isRunning = true;
         viewModel = MainViewModel.Companion.getInstance(getApplication());
         viewModel.updateServiceRunning(true);
+        audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+        setupAudioFocusListener();
         createNotificationChannel();
+    }
+
+    private void setupAudioFocusListener() {
+        audioFocusChangeListener = focusChange -> {
+            switch (focusChange) {
+                case AudioManager.AUDIOFOCUS_GAIN:
+                    // Regained focus - restore playback and volume
+                    if (audioTrack != null && !hasAudioFocus) {
+                        Log.i(TAG, "Audio focus gained - restoring playback");
+                        hasAudioFocus = true;
+                        volumeBeforeDuck = 0;  // Clear ducking state
+                        // Resume playback if paused
+                        if (audioTrack.getPlayState() == AudioTrack.PLAYSTATE_PAUSED) {
+                            audioTrack.play();
+                        }
+                    }
+                    break;
+
+                case AudioManager.AUDIOFOCUS_LOSS:
+                    // Lost focus permanently - pause playback
+                    Log.i(TAG, "Audio focus lost permanently - pausing playback");
+                    hasAudioFocus = false;
+                    volumeBeforeDuck = 0;
+                    if (audioTrack != null && audioTrack.getPlayState() == AudioTrack.PLAYSTATE_PLAYING) {
+                        audioTrack.pause();
+                    }
+                    break;
+
+                case AudioManager.AUDIOFOCUS_LOSS_TRANSIENT:
+                    // Lost focus temporarily - pause
+                    Log.i(TAG, "Audio focus lost transiently - pausing playback");
+                    hasAudioFocus = false;
+                    volumeBeforeDuck = 0;
+                    if (audioTrack != null && audioTrack.getPlayState() == AudioTrack.PLAYSTATE_PLAYING) {
+                        audioTrack.pause();
+                    }
+                    break;
+
+                case AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK:
+                    // Lost focus but can duck - reduce volume by 50%
+                    Log.i(TAG, "Audio focus lost - ducking volume to 50%");
+                    hasAudioFocus = false;
+                    // Mark that we're ducking (volume reduction happens in applyAudioEffects)
+                    volumeBeforeDuck = viewModel.getStreamVolume().getValue();
+                    break;
+            }
+        };
+    }
+
+    private boolean requestAudioFocus() {
+        if (audioManager == null) {
+            return false;
+        }
+
+        int result = audioManager.requestAudioFocus(
+            audioFocusChangeListener,
+            AudioManager.STREAM_MUSIC,
+            AudioManager.AUDIOFOCUS_GAIN
+        );
+
+        hasAudioFocus = (result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED);
+        if (hasAudioFocus) {
+            Log.i(TAG, "Audio focus granted");
+        } else {
+            Log.w(TAG, "Audio focus denied");
+        }
+        return hasAudioFocus;
+    }
+
+    private void abandonAudioFocus() {
+        if (audioManager != null && audioFocusChangeListener != null) {
+            audioManager.abandonAudioFocus(audioFocusChangeListener);
+            hasAudioFocus = false;
+            Log.i(TAG, "Audio focus abandoned");
+        }
     }
 
     @Override
@@ -357,6 +438,11 @@ public class AudioPlaybackService extends Service {
                 .setPerformanceMode(performanceMode)
                 .build();
 
+            // Request audio focus before starting playback
+            if (!requestAudioFocus()) {
+                Log.w(TAG, "Failed to gain audio focus, continuing anyway");
+            }
+
             audioTrack.play();
 
             // Initialize audio effects filters
@@ -502,6 +588,9 @@ public class AudioPlaybackService extends Service {
 
                     Log.d(TAG, "Decoded PCM: " + bufferInfo.size + " bytes");
 
+                    // Calculate audio level for visualization (before effects)
+                    calculateAndBroadcastAudioLevel(pcmData, pcmData.length);
+
                     // Apply audio effects (bass/treble/volume)
                     applyAudioEffects(pcmData, pcmData.length);
 
@@ -533,6 +622,25 @@ public class AudioPlaybackService extends Service {
         }
     }
 
+    private void calculateAndBroadcastAudioLevel(byte[] pcmData, int length) {
+        long sumOfSquares = 0;
+        ByteBuffer buffer = ByteBuffer.wrap(pcmData);
+        buffer.order(ByteOrder.LITTLE_ENDIAN);
+        int numSamples = length / 2;
+
+        for (int i = 0; i < numSamples; i++) {
+            short sample = buffer.getShort(i * 2);
+            sumOfSquares += (long) sample * sample;
+        }
+
+        double rms = Math.sqrt((double) sumOfSquares / numSamples);
+        float normalizedRms = (float) (rms / 32767.0);
+
+        if (viewModel != null) {
+            viewModel.updateAudioLevel(normalizedRms);
+        }
+    }
+
     private void applyAudioEffects(byte[] pcmData, int length) {
         if (bassFilter == null || trebleFilter == null) {
             return;
@@ -558,9 +666,17 @@ public class AudioPlaybackService extends Service {
             floatSample = trebleFilter.process(floatSample);
 
             // Apply volume
+            float effectiveVolume = 1.0f;
             if (profile != null) {
-                floatSample *= profile.getVolume();
+                effectiveVolume = profile.getVolume();
             }
+
+            // Duck volume if we don't have audio focus
+            if (!hasAudioFocus && volumeBeforeDuck > 0) {
+                effectiveVolume *= 0.5f;  // Reduce to 50% when ducking
+            }
+
+            floatSample *= effectiveVolume;
 
             // Clamp to valid range
             floatSample = Math.max(-1.0f, Math.min(1.0f, floatSample));
@@ -574,6 +690,9 @@ public class AudioPlaybackService extends Service {
     }
 
     private void cleanupAudioComponents() {
+        // Abandon audio focus before stopping playback
+        abandonAudioFocus();
+
         if (decoder != null) {
             try {
                 decoder.stop();
