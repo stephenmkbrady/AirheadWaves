@@ -54,6 +54,7 @@ enum class OutputDevice {
 
 @Serializable
 enum class BufferSize(val milliseconds: Int) {
+    ULTRA_LOW(0),
     LOW_LATENCY(75),
     BALANCED(150),
     SMOOTH(350)

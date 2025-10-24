@@ -268,7 +268,7 @@ public class AudioPlaybackService extends Service {
 
     private void initializeAudioComponents() {
         try {
-            // Initialize MediaCodec for AAC decoding
+            // Initialize MediaCodec for AAC decoding with low latency
             MediaFormat format = MediaFormat.createAudioFormat(
                 MediaFormat.MIMETYPE_AUDIO_AAC,
                 detectedSampleRate,
@@ -289,6 +289,12 @@ public class AudioPlaybackService extends Service {
             ByteBuffer csdBuffer = ByteBuffer.wrap(csd);
             format.setByteBuffer("csd-0", csdBuffer);
 
+            // Request low latency decoding (Android 9+)
+            // This reduces internal decoder buffering
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1);
+            }
+
             Log.i(TAG, "CSD-0 created: aacProfile=" + aacProfile + ", freqIndex=" + freqIndex +
                   ", channels=" + channelConfig + ", bytes=" + bytesToHex(csd));
 
@@ -304,7 +310,7 @@ public class AudioPlaybackService extends Service {
             );
 
             // Calculate buffer size based on profile settings
-            // BufferSize enum: LOW_LATENCY(75ms), BALANCED(150ms), SMOOTH(350ms)
+            // BufferSize enum: ULTRA_LOW(0ms), LOW_LATENCY(75ms), BALANCED(150ms), SMOOTH(350ms)
             int targetBufferMs = 150;  // Default to BALANCED (150ms)
             if (profile != null) {
                 targetBufferMs = profile.getBufferSize().getMilliseconds();
@@ -315,8 +321,14 @@ public class AudioPlaybackService extends Service {
             int bytesPerSample = 2;  // 16-bit PCM = 2 bytes
             int calculatedBufferSize = (detectedSampleRate * detectedChannels * bytesPerSample * targetBufferMs) / 1000;
 
-            // Use the larger of minimum required or calculated size
-            int bufferSize = Math.max(minBufferSize, calculatedBufferSize);
+            // For ULTRA_LOW and LOW_LATENCY modes, use minimum buffer regardless of calculation
+            // This matches GStreamer's aggressive low-latency approach
+            int bufferSize;
+            if (targetBufferMs <= 75) {
+                bufferSize = minBufferSize;  // Use absolute minimum for lowest latency
+            } else {
+                bufferSize = Math.max(minBufferSize, calculatedBufferSize);
+            }
 
             Log.i(TAG, "AudioTrack buffer: target=" + targetBufferMs + "ms, calculated=" +
                   calculatedBufferSize + " bytes, min=" + minBufferSize + " bytes, using=" + bufferSize + " bytes");
@@ -332,7 +344,7 @@ public class AudioPlaybackService extends Service {
                 .setChannelMask(detectedChannels == 2 ? AudioFormat.CHANNEL_OUT_STEREO : AudioFormat.CHANNEL_OUT_MONO)
                 .build();
 
-            // Use low latency mode for LOW_LATENCY setting, otherwise normal mode
+            // Use low latency mode for ULTRA_LOW and LOW_LATENCY settings
             int performanceMode = (targetBufferMs <= 75)
                 ? AudioTrack.PERFORMANCE_MODE_LOW_LATENCY
                 : AudioTrack.PERFORMANCE_MODE_NONE;
@@ -452,8 +464,8 @@ public class AudioPlaybackService extends Service {
         }
 
         try {
-            // Get input buffer from decoder (short timeout for low latency)
-            int inputBufferIndex = decoder.dequeueInputBuffer(1000);
+            // Get input buffer from decoder (minimal timeout for lowest latency)
+            int inputBufferIndex = decoder.dequeueInputBuffer(100);
             if (inputBufferIndex >= 0) {
                 ByteBuffer inputBuffer = decoder.getInputBuffer(inputBufferIndex);
                 if (inputBuffer != null) {

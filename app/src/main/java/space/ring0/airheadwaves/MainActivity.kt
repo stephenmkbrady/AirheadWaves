@@ -894,6 +894,7 @@ fun ReceiveProfileEditor(
                 ) {
                     OutlinedTextField(
                         value = when(bufferSize) {
+                            BufferSize.ULTRA_LOW -> "Ultra Low (Hardware Min)"
                             BufferSize.LOW_LATENCY -> "Low Latency (75ms)"
                             BufferSize.BALANCED -> "Balanced (150ms)"
                             BufferSize.SMOOTH -> "Smooth (350ms)"
@@ -910,6 +911,13 @@ fun ReceiveProfileEditor(
                         expanded = bufferSizeExpanded,
                         onDismissRequest = { bufferSizeExpanded = false }
                     ) {
+                        DropdownMenuItem(
+                            text = { Text("Ultra Low (Hardware Min)") },
+                            onClick = {
+                                bufferSize = BufferSize.ULTRA_LOW
+                                bufferSizeExpanded = false
+                            }
+                        )
                         DropdownMenuItem(
                             text = { Text("Low Latency (75ms)") },
                             onClick = {
