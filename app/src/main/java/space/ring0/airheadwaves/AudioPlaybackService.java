@@ -1,0 +1,387 @@
+package space.ring0.airheadwaves;
+
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.app.PendingIntent;
+import android.app.Service;
+import android.content.Context;
+import android.content.Intent;
+import android.media.AudioAttributes;
+import android.media.AudioFormat;
+import android.media.AudioManager;
+import android.media.AudioTrack;
+import android.media.MediaCodec;
+import android.media.MediaCodecInfo;
+import android.media.MediaFormat;
+import android.os.Build;
+import android.os.IBinder;
+import android.util.Log;
+
+import androidx.core.app.NotificationCompat;
+
+import space.ring0.airheadwaves.models.ReceiveProfile;
+
+import java.io.IOException;
+import java.io.InputStream;
+import java.net.ServerSocket;
+import java.net.Socket;
+import java.nio.ByteBuffer;
+import java.util.concurrent.atomic.AtomicBoolean;
+
+/**
+ * AudioPlaybackService - Receive Mode Service
+ *
+ * Implements TCP server for receiving AAC audio streams.
+ * Decodes AAC to PCM and plays through AudioTrack.
+ *
+ * Phase 1: Single connection support
+ * Phase 2: Multiple connections with mixing
+ */
+public class AudioPlaybackService extends Service {
+    private static final String TAG = "AudioPlaybackService";
+    private static final String CHANNEL_ID = "AudioPlaybackChannel";
+    private static final int NOTIFICATION_ID = 2;
+
+    // Service state
+    private final AtomicBoolean isRunning = new AtomicBoolean(false);
+    private ServerSocket serverSocket;
+    private Socket clientSocket;
+    private Thread serverThread;
+    private Thread playbackThread;
+
+    // Audio components
+    private MediaCodec decoder;
+    private AudioTrack audioTrack;
+    private ReceiveProfile profile;
+
+    // Stream state
+    private int detectedSampleRate = 44100;
+    private int detectedChannels = 2;
+    private String connectedClientIP;
+
+    @Override
+    public void onCreate() {
+        super.onCreate();
+        createNotificationChannel();
+    }
+
+    @Override
+    public int onStartCommand(Intent intent, int flags, int startId) {
+        if (intent == null) {
+            return START_NOT_STICKY;
+        }
+
+        String action = intent.getAction();
+        if ("START".equals(action)) {
+            // Get profile from intent (serialized)
+            String profileJson = intent.getStringExtra("PROFILE_JSON");
+            if (profileJson != null) {
+                try {
+                    // TODO: Deserialize ReceiveProfile from JSON
+                    // For now, create a default profile
+                    startReceiving(createDefaultProfile());
+                } catch (Exception e) {
+                    Log.e(TAG, "Failed to parse profile", e);
+                    stopSelf();
+                }
+            }
+        } else if ("STOP".equals(action)) {
+            stopReceiving();
+        }
+
+        return START_STICKY;
+    }
+
+    private ReceiveProfile createDefaultProfile() {
+        // TODO: Properly deserialize from intent
+        // This is a placeholder
+        return null;
+    }
+
+    private void startReceiving(ReceiveProfile profile) {
+        if (isRunning.getAndSet(true)) {
+            return;  // Already running
+        }
+
+        this.profile = profile;
+        startForeground(NOTIFICATION_ID, createNotification("Starting receiver..."));
+
+        // Start TCP server thread
+        serverThread = new Thread(this::runTCPServer);
+        serverThread.start();
+
+        updateNotification("Listening on port " + (profile != null ? profile.getListenPort() : 8888));
+        broadcastStatus("Listening on port " + (profile != null ? profile.getListenPort() : 8888));
+    }
+
+    private void runTCPServer() {
+        try {
+            int port = profile != null ? profile.getListenPort() : 8888;
+            serverSocket = new ServerSocket(port);
+            Log.i(TAG, "TCP Server listening on port " + port);
+
+            while (isRunning.get() && !serverSocket.isClosed()) {
+                try {
+                    // Accept incoming connection (blocking)
+                    clientSocket = serverSocket.accept();
+                    connectedClientIP = clientSocket.getInetAddress().getHostAddress();
+
+                    Log.i(TAG, "Client connected: " + connectedClientIP);
+                    updateNotification("Connected: " + connectedClientIP);
+                    broadcastStatus("Connected: " + connectedClientIP);
+
+                    // Check access control
+                    if (!isClientAllowed(connectedClientIP)) {
+                        Log.w(TAG, "Client not allowed: " + connectedClientIP);
+                        clientSocket.close();
+                        continue;
+                    }
+
+                    // Start playback thread
+                    playbackThread = new Thread(this::runPlayback);
+                    playbackThread.start();
+
+                    // Wait for playback to finish
+                    playbackThread.join();
+
+                } catch (IOException e) {
+                    if (isRunning.get()) {
+                        Log.e(TAG, "Error accepting connection", e);
+                    }
+                } catch (InterruptedException e) {
+                    Log.e(TAG, "Playback thread interrupted", e);
+                }
+            }
+
+        } catch (IOException e) {
+            Log.e(TAG, "Failed to create server socket", e);
+            broadcastStatus("Error: " + e.getMessage());
+        } finally {
+            cleanup();
+        }
+    }
+
+    private boolean isClientAllowed(String clientIP) {
+        if (profile == null) {
+            return true;
+        }
+
+        // Check if unknown transmitters are allowed
+        if (profile.getAllowUnknownTransmitters()) {
+            return true;
+        }
+
+        // Check whitelist
+        for (String allowedIP : profile.getAllowedTransmitterIPs()) {
+            if (allowedIP.equals(clientIP)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private void runPlayback() {
+        try {
+            InputStream inputStream = clientSocket.getInputStream();
+
+            // Initialize decoder and audio track
+            initializeAudioComponents();
+
+            // Read and decode AAC frames
+            byte[] buffer = new byte[8192];
+            while (isRunning.get() && !clientSocket.isClosed()) {
+                int bytesRead = inputStream.read(buffer);
+                if (bytesRead == -1) {
+                    break;  // End of stream
+                }
+
+                // TODO: Parse ADTS headers and decode AAC
+                // This is a placeholder for Phase 1
+                processAudioData(buffer, bytesRead);
+            }
+
+        } catch (IOException e) {
+            if (isRunning.get()) {
+                Log.e(TAG, "Playback error", e);
+            }
+        } finally {
+            cleanupAudioComponents();
+            try {
+                if (clientSocket != null) {
+                    clientSocket.close();
+                }
+            } catch (IOException e) {
+                Log.e(TAG, "Error closing client socket", e);
+            }
+
+            updateNotification("Listening on port " + (profile != null ? profile.getListenPort() : 8888));
+            broadcastStatus("Listening on port " + (profile != null ? profile.getListenPort() : 8888));
+        }
+    }
+
+    private void initializeAudioComponents() {
+        try {
+            // Initialize MediaCodec for AAC decoding
+            MediaFormat format = MediaFormat.createAudioFormat(
+                MediaFormat.MIMETYPE_AUDIO_AAC,
+                detectedSampleRate,
+                detectedChannels
+            );
+
+            decoder = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_AUDIO_AAC);
+            decoder.configure(format, null, null, 0);
+            decoder.start();
+
+            // Initialize AudioTrack for playback
+            int bufferSize = AudioTrack.getMinBufferSize(
+                detectedSampleRate,
+                detectedChannels == 2 ? AudioFormat.CHANNEL_OUT_STEREO : AudioFormat.CHANNEL_OUT_MONO,
+                AudioFormat.ENCODING_PCM_16BIT
+            );
+
+            AudioAttributes audioAttributes = new AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_MEDIA)
+                .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                .build();
+
+            AudioFormat audioFormat = new AudioFormat.Builder()
+                .setSampleRate(detectedSampleRate)
+                .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                .setChannelMask(detectedChannels == 2 ? AudioFormat.CHANNEL_OUT_STEREO : AudioFormat.CHANNEL_OUT_MONO)
+                .build();
+
+            audioTrack = new AudioTrack(
+                audioAttributes,
+                audioFormat,
+                bufferSize * 2,  // Double buffer for smoothness
+                AudioTrack.MODE_STREAM,
+                AudioManager.AUDIO_SESSION_ID_GENERATE
+            );
+
+            audioTrack.play();
+            Log.i(TAG, "Audio components initialized: " + detectedSampleRate + "Hz, " + detectedChannels + " channels");
+
+        } catch (IOException e) {
+            Log.e(TAG, "Failed to initialize audio components", e);
+        }
+    }
+
+    private void processAudioData(byte[] data, int length) {
+        // TODO: Implement ADTS parsing and AAC decoding
+        // Phase 1: Basic decoding without ADTS parsing
+        // Phase 2: Full ADTS parsing and auto-detection
+
+        // Placeholder: This needs proper implementation
+        Log.d(TAG, "Received " + length + " bytes of audio data");
+    }
+
+    private void cleanupAudioComponents() {
+        if (decoder != null) {
+            try {
+                decoder.stop();
+                decoder.release();
+            } catch (Exception e) {
+                Log.e(TAG, "Error stopping decoder", e);
+            }
+            decoder = null;
+        }
+
+        if (audioTrack != null) {
+            try {
+                audioTrack.stop();
+                audioTrack.release();
+            } catch (Exception e) {
+                Log.e(TAG, "Error stopping audio track", e);
+            }
+            audioTrack = null;
+        }
+    }
+
+    private void stopReceiving() {
+        isRunning.set(false);
+
+        try {
+            if (clientSocket != null) {
+                clientSocket.close();
+            }
+            if (serverSocket != null) {
+                serverSocket.close();
+            }
+        } catch (IOException e) {
+            Log.e(TAG, "Error closing sockets", e);
+        }
+
+        cleanup();
+        stopForeground(true);
+        stopSelf();
+    }
+
+    private void cleanup() {
+        cleanupAudioComponents();
+
+        if (serverThread != null) {
+            serverThread.interrupt();
+        }
+        if (playbackThread != null) {
+            playbackThread.interrupt();
+        }
+    }
+
+    private void createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationChannel channel = new NotificationChannel(
+                CHANNEL_ID,
+                "Audio Playback Service",
+                NotificationManager.IMPORTANCE_LOW
+            );
+            channel.setDescription("Receives and plays audio streams");
+
+            NotificationManager manager = getSystemService(NotificationManager.class);
+            if (manager != null) {
+                manager.createNotificationChannel(channel);
+            }
+        }
+    }
+
+    private Notification createNotification(String contentText) {
+        Intent notificationIntent = new Intent(this, MainActivity.class);
+        PendingIntent pendingIntent = PendingIntent.getActivity(
+            this, 0, notificationIntent,
+            PendingIntent.FLAG_IMMUTABLE
+        );
+
+        return new NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle("AirheadWaves Receiver")
+            .setContentText(contentText)
+            .setSmallIcon(android.R.drawable.ic_media_play)  // TODO: Use app icon
+            .setContentIntent(pendingIntent)
+            .setOngoing(true)
+            .build();
+    }
+
+    private void updateNotification(String contentText) {
+        NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+        if (manager != null) {
+            manager.notify(NOTIFICATION_ID, createNotification(contentText));
+        }
+    }
+
+    private void broadcastStatus(String status) {
+        Intent intent = new Intent("AUDIO_PLAYBACK_STATUS");
+        intent.putExtra("status", status);
+        sendBroadcast(intent);
+    }
+
+    @Override
+    public IBinder onBind(Intent intent) {
+        return null;
+    }
+
+    @Override
+    public void onDestroy() {
+        stopReceiving();
+        super.onDestroy();
+    }
+}
