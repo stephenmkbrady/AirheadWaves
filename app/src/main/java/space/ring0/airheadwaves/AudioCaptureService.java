@@ -246,6 +246,11 @@ public class AudioCaptureService extends Service {
         for (space.ring0.airheadwaves.models.Destination dest : destinations) {
             try {
                 Socket socket = new Socket(dest.getIpAddress(), dest.getPort());
+
+                // Configure socket for low latency
+                socket.setTcpNoDelay(true);  // Disable Nagle's algorithm
+                socket.setSendBufferSize(8192);  // Small buffer for low latency
+
                 sockets.add(socket);
                 connected.add(dest.getIpAddress() + ":" + dest.getPort());
                 Log.i(TAG, "Connected to " + dest.getIpAddress() + ":" + dest.getPort());
@@ -265,6 +270,9 @@ public class AudioCaptureService extends Service {
             MediaCodec.BufferInfo bufferInfo = new MediaCodec.BufferInfo();
             long lastStatTime = System.currentTimeMillis();
             long bytesSent = 0;
+            long totalBytesRead = 0;
+            long totalBytesEncoded = 0;
+            boolean hasLoggedFirstData = false;
 
             while (!Thread.currentThread().isInterrupted()) {
                 int inputBufferIndex = mediaCodec.dequeueInputBuffer(-1);
@@ -273,10 +281,17 @@ public class AudioCaptureService extends Service {
                     inputBuffer.clear();
                     int read = audioRecord.read(inputBuffer, 2 * 1024);
                     if (read > 0) {
+                        totalBytesRead += read;
+                        if (!hasLoggedFirstData) {
+                            Log.i(TAG, "First audio data read: " + read + " bytes");
+                            hasLoggedFirstData = true;
+                        }
                         calculateAndBroadcastAudioLevel(inputBuffer, read);
                         applyAudioEffects(inputBuffer, read);
                         inputBuffer.position(0);  // Reset position after effects
                         mediaCodec.queueInputBuffer(inputBufferIndex, 0, read, 0, 0);
+                    } else if (read < 0) {
+                        Log.e(TAG, "AudioRecord.read error: " + read);
                     }
                 }
 
@@ -284,11 +299,24 @@ public class AudioCaptureService extends Service {
                 while (outputBufferIndex >= 0) {
                     ByteBuffer outputBuffer = mediaCodec.getOutputBuffer(outputBufferIndex);
                     int outPacketSize = bufferInfo.size;
+
+                    if (outPacketSize == 0) {
+                        Log.w(TAG, "MediaCodec produced empty output buffer");
+                        mediaCodec.releaseOutputBuffer(outputBufferIndex, false);
+                        outputBufferIndex = mediaCodec.dequeueOutputBuffer(bufferInfo, 0);
+                        continue;
+                    }
+
                     int outPacketSizeWithHeader = outPacketSize + 7;
                     byte[] outData = new byte[outPacketSizeWithHeader];
 
                     addAdtsHeader(outData, outPacketSizeWithHeader);
                     outputBuffer.get(outData, 7, outPacketSize);
+
+                    totalBytesEncoded += outPacketSize;
+                    if (totalBytesEncoded < 10000) {  // Log first ~10KB
+                        Log.d(TAG, "Encoded AAC packet: " + outPacketSize + " bytes (total: " + totalBytesEncoded + ")");
+                    }
 
                     // Send to all connected destinations
                     for (int i = sockets.size() - 1; i >= 0; i--) {

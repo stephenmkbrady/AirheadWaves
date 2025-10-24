@@ -156,6 +156,11 @@ public class AudioPlaybackService extends Service {
                 try {
                     // Accept incoming connection (blocking)
                     clientSocket = serverSocket.accept();
+
+                    // Configure socket for low latency
+                    clientSocket.setTcpNoDelay(true);  // Disable Nagle's algorithm
+                    clientSocket.setReceiveBufferSize(8192);  // Small buffer for low latency
+
                     connectedClientIP = clientSocket.getInetAddress().getHostAddress();
 
                     Log.i(TAG, "Client connected: " + connectedClientIP);
@@ -270,16 +275,51 @@ public class AudioPlaybackService extends Service {
                 detectedChannels
             );
 
+            // Create AAC codec-specific data (CSD) from ADTS header info
+            // This tells the decoder the AAC profile and configuration
+            // Format: 5 bits profile (2 = AAC-LC), 4 bits sample rate index, 4 bits channel config
+            int aacProfile = 2;  // AAC-LC
+            int freqIndex = getSampleRateIndex(detectedSampleRate);
+            int channelConfig = detectedChannels;
+
+            byte[] csd = new byte[2];
+            csd[0] = (byte) (((aacProfile & 0x1F) << 3) | ((freqIndex & 0x0E) >> 1));
+            csd[1] = (byte) (((freqIndex & 0x01) << 7) | ((channelConfig & 0x0F) << 3));
+
+            ByteBuffer csdBuffer = ByteBuffer.wrap(csd);
+            format.setByteBuffer("csd-0", csdBuffer);
+
+            Log.i(TAG, "CSD-0 created: aacProfile=" + aacProfile + ", freqIndex=" + freqIndex +
+                  ", channels=" + channelConfig + ", bytes=" + bytesToHex(csd));
+
             decoder = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_AUDIO_AAC);
             decoder.configure(format, null, null, 0);
             decoder.start();
 
-            // Initialize AudioTrack for playback
-            int bufferSize = AudioTrack.getMinBufferSize(
+            // Initialize AudioTrack for playback with configurable latency
+            int minBufferSize = AudioTrack.getMinBufferSize(
                 detectedSampleRate,
                 detectedChannels == 2 ? AudioFormat.CHANNEL_OUT_STEREO : AudioFormat.CHANNEL_OUT_MONO,
                 AudioFormat.ENCODING_PCM_16BIT
             );
+
+            // Calculate buffer size based on profile settings
+            // BufferSize enum: LOW_LATENCY(75ms), BALANCED(150ms), SMOOTH(350ms)
+            int targetBufferMs = 150;  // Default to BALANCED (150ms)
+            if (profile != null) {
+                targetBufferMs = profile.getBufferSize().getMilliseconds();
+            }
+
+            // Calculate buffer size in bytes from milliseconds
+            // Formula: (sampleRate * channels * bytesPerSample * ms) / 1000
+            int bytesPerSample = 2;  // 16-bit PCM = 2 bytes
+            int calculatedBufferSize = (detectedSampleRate * detectedChannels * bytesPerSample * targetBufferMs) / 1000;
+
+            // Use the larger of minimum required or calculated size
+            int bufferSize = Math.max(minBufferSize, calculatedBufferSize);
+
+            Log.i(TAG, "AudioTrack buffer: target=" + targetBufferMs + "ms, calculated=" +
+                  calculatedBufferSize + " bytes, min=" + minBufferSize + " bytes, using=" + bufferSize + " bytes");
 
             AudioAttributes audioAttributes = new AudioAttributes.Builder()
                 .setUsage(AudioAttributes.USAGE_MEDIA)
@@ -292,13 +332,18 @@ public class AudioPlaybackService extends Service {
                 .setChannelMask(detectedChannels == 2 ? AudioFormat.CHANNEL_OUT_STEREO : AudioFormat.CHANNEL_OUT_MONO)
                 .build();
 
-            audioTrack = new AudioTrack(
-                audioAttributes,
-                audioFormat,
-                bufferSize * 2,  // Double buffer for smoothness
-                AudioTrack.MODE_STREAM,
-                AudioManager.AUDIO_SESSION_ID_GENERATE
-            );
+            // Use low latency mode for LOW_LATENCY setting, otherwise normal mode
+            int performanceMode = (targetBufferMs <= 75)
+                ? AudioTrack.PERFORMANCE_MODE_LOW_LATENCY
+                : AudioTrack.PERFORMANCE_MODE_NONE;
+
+            audioTrack = new AudioTrack.Builder()
+                .setAudioAttributes(audioAttributes)
+                .setAudioFormat(audioFormat)
+                .setBufferSizeInBytes(bufferSize)
+                .setTransferMode(AudioTrack.MODE_STREAM)
+                .setPerformanceMode(performanceMode)
+                .build();
 
             audioTrack.play();
 
@@ -339,6 +384,8 @@ public class AudioPlaybackService extends Service {
             frameBufferPos = 0;
         }
 
+        Log.d(TAG, "Received " + length + " bytes, buffer now has " + (frameBufferPos + length) + " bytes");
+
         System.arraycopy(data, 0, frameBuffer, frameBufferPos, length);
         frameBufferPos += length;
 
@@ -349,16 +396,22 @@ public class AudioPlaybackService extends Service {
             int syncPos = ADTSParser.findSyncWord(frameBuffer, offset);
             if (syncPos == -1) {
                 // No sync word found, keep remaining data for next iteration
+                Log.d(TAG, "No sync word found in buffer");
                 break;
             }
+
+            Log.d(TAG, "Found sync word at position " + syncPos);
 
             // Parse ADTS header
             ADTSParser.ADTSFrame frame = ADTSParser.parseHeader(frameBuffer, syncPos);
             if (frame == null || !frame.isValid) {
                 // Invalid frame, skip to next byte
+                Log.w(TAG, "Invalid ADTS frame at position " + syncPos);
                 offset = syncPos + 1;
                 continue;
             }
+
+            Log.d(TAG, "Valid ADTS frame: " + frame.sampleRate + "Hz, " + frame.channels + "ch, " + frame.frameLength + " bytes");
 
             // Check if we have complete frame
             if (!ADTSParser.hasCompleteFrame(frameBuffer, syncPos)) {
@@ -399,14 +452,15 @@ public class AudioPlaybackService extends Service {
         }
 
         try {
-            // Get input buffer from decoder
-            int inputBufferIndex = decoder.dequeueInputBuffer(10000);
+            // Get input buffer from decoder (short timeout for low latency)
+            int inputBufferIndex = decoder.dequeueInputBuffer(1000);
             if (inputBufferIndex >= 0) {
                 ByteBuffer inputBuffer = decoder.getInputBuffer(inputBufferIndex);
                 if (inputBuffer != null) {
                     inputBuffer.clear();
 
-                    // Copy AAC payload (without ADTS header) to input buffer
+                    // Strip ADTS header and send only AAC payload
+                    // MediaCodec expects raw AAC frames when configured without CSD
                     int payloadOffset = offset + 7;  // ADTS header is 7 bytes
                     int payloadLength = frame.getPayloadLength();
 
@@ -414,12 +468,18 @@ public class AudioPlaybackService extends Service {
 
                     // Queue input buffer for decoding
                     decoder.queueInputBuffer(inputBufferIndex, 0, payloadLength, 0, 0);
+
+                    Log.v(TAG, "Queued AAC payload: " + payloadLength + " bytes");
                 }
+            } else if (inputBufferIndex == MediaCodec.INFO_TRY_AGAIN_LATER) {
+                Log.w(TAG, "Decoder input buffer not available");
+            } else {
+                Log.e(TAG, "Unexpected dequeueInputBuffer result: " + inputBufferIndex);
             }
 
             // Get decoded output
             MediaCodec.BufferInfo bufferInfo = new MediaCodec.BufferInfo();
-            int outputBufferIndex = decoder.dequeueOutputBuffer(bufferInfo, 10000);
+            int outputBufferIndex = decoder.dequeueOutputBuffer(bufferInfo, 0);
 
             while (outputBufferIndex >= 0) {
                 ByteBuffer outputBuffer = decoder.getOutputBuffer(outputBufferIndex);
@@ -428,17 +488,32 @@ public class AudioPlaybackService extends Service {
                     byte[] pcmData = new byte[bufferInfo.size];
                     outputBuffer.get(pcmData);
 
+                    Log.d(TAG, "Decoded PCM: " + bufferInfo.size + " bytes");
+
                     // Apply audio effects (bass/treble/volume)
                     applyAudioEffects(pcmData, pcmData.length);
 
                     // Play PCM data through AudioTrack
                     if (audioTrack != null) {
-                        audioTrack.write(pcmData, 0, pcmData.length);
+                        int written = audioTrack.write(pcmData, 0, pcmData.length);
+                        Log.d(TAG, "AudioTrack wrote " + written + " bytes (requested " + pcmData.length + ")");
                     }
+                } else {
+                    Log.v(TAG, "Decoder output buffer empty or null (size=" + bufferInfo.size + ")");
                 }
 
                 decoder.releaseOutputBuffer(outputBufferIndex, false);
                 outputBufferIndex = decoder.dequeueOutputBuffer(bufferInfo, 0);
+            }
+
+            // Handle format changes
+            if (outputBufferIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                MediaFormat newFormat = decoder.getOutputFormat();
+                Log.i(TAG, "Decoder output format changed: " + newFormat);
+            } else if (outputBufferIndex == MediaCodec.INFO_TRY_AGAIN_LATER) {
+                // No output available yet - this is normal
+            } else if (outputBufferIndex < 0 && outputBufferIndex != MediaCodec.INFO_TRY_AGAIN_LATER) {
+                Log.w(TAG, "Unexpected dequeueOutputBuffer result: " + outputBufferIndex);
             }
 
         } catch (Exception e) {
@@ -536,6 +611,33 @@ public class AudioPlaybackService extends Service {
         if (playbackThread != null) {
             playbackThread.interrupt();
         }
+    }
+
+    private int getSampleRateIndex(int sampleRate) {
+        switch (sampleRate) {
+            case 96000: return 0;
+            case 88200: return 1;
+            case 64000: return 2;
+            case 48000: return 3;
+            case 44100: return 4;
+            case 32000: return 5;
+            case 24000: return 6;
+            case 22050: return 7;
+            case 16000: return 8;
+            case 12000: return 9;
+            case 11025: return 10;
+            case 8000: return 11;
+            case 7350: return 12;
+            default: return 4;  // Default to 44100Hz
+        }
+    }
+
+    private String bytesToHex(byte[] bytes) {
+        StringBuilder sb = new StringBuilder();
+        for (byte b : bytes) {
+            sb.append(String.format("%02X ", b));
+        }
+        return sb.toString().trim();
     }
 
     private void createNotificationChannel() {

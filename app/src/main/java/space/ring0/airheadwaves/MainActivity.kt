@@ -801,11 +801,12 @@ fun ReceiveProfileEditor(
     var bass by remember { mutableFloatStateOf(profile.bass) }
     var treble by remember { mutableFloatStateOf(profile.treble) }
     var volume by remember { mutableFloatStateOf(profile.volume) }
+    var bufferSize by remember { mutableStateOf(profile.bufferSize) }
     var allowUnknownTransmitters by remember { mutableStateOf(profile.allowUnknownTransmitters) }
     var allowedIPs by remember { mutableStateOf(profile.allowedTransmitterIPs.joinToString("\n")) }
     var isExpanded by remember { mutableStateOf(false) }
 
-    LaunchedEffect(name, listenPort, bass, treble, volume, allowUnknownTransmitters, allowedIPs) {
+    LaunchedEffect(name, listenPort, bass, treble, volume, bufferSize, allowUnknownTransmitters, allowedIPs) {
         val ipList = if (allowedIPs.isBlank()) emptyList() else allowedIPs.split("\n").map { it.trim() }.filter { it.isNotEmpty() }
         onProfileChange(profile.copy(
             name = name,
@@ -813,6 +814,7 @@ fun ReceiveProfileEditor(
             bass = bass,
             treble = treble,
             volume = volume,
+            bufferSize = bufferSize,
             allowUnknownTransmitters = allowUnknownTransmitters,
             allowedTransmitterIPs = ipList
         ))
@@ -880,6 +882,56 @@ fun ReceiveProfileEditor(
                         modifier = Modifier.weight(1f)
                     )
                     Text("%.1f dB".format(treble), modifier = Modifier.width(60.dp))
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // Buffer Size dropdown
+                var bufferSizeExpanded by remember { mutableStateOf(false) }
+                ExposedDropdownMenuBox(
+                    expanded = bufferSizeExpanded,
+                    onExpandedChange = { bufferSizeExpanded = !bufferSizeExpanded }
+                ) {
+                    OutlinedTextField(
+                        value = when(bufferSize) {
+                            BufferSize.LOW_LATENCY -> "Low Latency (75ms)"
+                            BufferSize.BALANCED -> "Balanced (150ms)"
+                            BufferSize.SMOOTH -> "Smooth (350ms)"
+                        },
+                        onValueChange = {},
+                        readOnly = true,
+                        label = { Text("Latency Buffer") },
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = bufferSizeExpanded) },
+                        modifier = Modifier
+                            .menuAnchor(MenuAnchorType.PrimaryNotEditable)
+                            .fillMaxWidth()
+                    )
+                    ExposedDropdownMenu(
+                        expanded = bufferSizeExpanded,
+                        onDismissRequest = { bufferSizeExpanded = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Low Latency (75ms)") },
+                            onClick = {
+                                bufferSize = BufferSize.LOW_LATENCY
+                                bufferSizeExpanded = false
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Balanced (150ms)") },
+                            onClick = {
+                                bufferSize = BufferSize.BALANCED
+                                bufferSizeExpanded = false
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Smooth (350ms)") },
+                            onClick = {
+                                bufferSize = BufferSize.SMOOTH
+                                bufferSizeExpanded = false
+                            }
+                        )
+                    }
                 }
 
                 Text("Access Control", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 16.dp, bottom = 8.dp))
