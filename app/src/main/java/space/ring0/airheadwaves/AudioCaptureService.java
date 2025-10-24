@@ -146,7 +146,14 @@ public class AudioCaptureService extends Service {
     private void setupFilters() {
         bassFilter = new BiquadFilter(sampleRate);
         trebleFilter = new BiquadFilter(sampleRate);
-        // Filters will be initialized with 0dB (no effect) and updated dynamically in applyAudioEffects
+
+        // Initialize filters with profile settings or 0dB (no effect)
+        float bass = profile != null ? profile.getBass() : 0f;
+        float treble = profile != null ? profile.getTreble() : 0f;
+        bassFilter.setLowShelf(bass, 200f);
+        trebleFilter.setHighShelf(treble, 3000f);
+        lastBass = bass;
+        lastTreble = treble;
     }
 
     private void addAdtsHeader(byte[] packet, int packetLen) {
@@ -181,11 +188,10 @@ public class AudioCaptureService extends Service {
         float currentVolume = viewModel.getStreamVolume().getValue();
         float scaledVolume = currentVolume * currentVolume * currentVolume;
 
-        // Read current bass/treble from selected profile for real-time updates
-        ServerProfile selectedProfile = viewModel.getSelectedProfile().getValue();
-        if (selectedProfile != null) {
-            float currentBass = selectedProfile.getBass();
-            float currentTreble = selectedProfile.getTreble();
+        // Read current bass/treble from TransmitProfile for real-time updates
+        if (profile != null) {
+            float currentBass = profile.getBass();
+            float currentTreble = profile.getTreble();
 
             // Update filters if bass or treble changed
             if (currentBass != lastBass || currentTreble != lastTreble) {
