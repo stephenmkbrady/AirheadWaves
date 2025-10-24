@@ -268,13 +268,122 @@ public class AudioPlaybackService extends Service {
         }
     }
 
-    private void processAudioData(byte[] data, int length) {
-        // TODO: Implement ADTS parsing and AAC decoding
-        // Phase 1: Basic decoding without ADTS parsing
-        // Phase 2: Full ADTS parsing and auto-detection
+    // Buffer for incomplete ADTS frames
+    private byte[] frameBuffer = new byte[8192 * 2];
+    private int frameBufferPos = 0;
 
-        // Placeholder: This needs proper implementation
-        Log.d(TAG, "Received " + length + " bytes of audio data");
+    private void processAudioData(byte[] data, int length) {
+        // Copy received data to frame buffer
+        if (frameBufferPos + length > frameBuffer.length) {
+            // Buffer overflow, reset
+            Log.w(TAG, "Frame buffer overflow, resetting");
+            frameBufferPos = 0;
+        }
+
+        System.arraycopy(data, 0, frameBuffer, frameBufferPos, length);
+        frameBufferPos += length;
+
+        // Process all complete ADTS frames in buffer
+        int offset = 0;
+        while (offset < frameBufferPos) {
+            // Find ADTS sync word
+            int syncPos = ADTSParser.findSyncWord(frameBuffer, offset);
+            if (syncPos == -1) {
+                // No sync word found, keep remaining data for next iteration
+                break;
+            }
+
+            // Parse ADTS header
+            ADTSParser.ADTSFrame frame = ADTSParser.parseHeader(frameBuffer, syncPos);
+            if (frame == null || !frame.isValid) {
+                // Invalid frame, skip to next byte
+                offset = syncPos + 1;
+                continue;
+            }
+
+            // Check if we have complete frame
+            if (!ADTSParser.hasCompleteFrame(frameBuffer, syncPos)) {
+                // Incomplete frame, wait for more data
+                break;
+            }
+
+            // Auto-detect stream parameters on first frame
+            if (detectedSampleRate != frame.sampleRate || detectedChannels != frame.channels) {
+                Log.i(TAG, "Stream parameters changed: " + frame.sampleRate + "Hz, " + frame.channels + "ch");
+                detectedSampleRate = frame.sampleRate;
+                detectedChannels = frame.channels;
+
+                // Reinitialize audio components with detected parameters
+                cleanupAudioComponents();
+                initializeAudioComponents();
+            }
+
+            // Decode AAC frame
+            decodeAACFrame(frameBuffer, syncPos, frame);
+
+            // Move to next frame
+            offset = syncPos + frame.frameLength;
+        }
+
+        // Shift remaining data to beginning of buffer
+        if (offset > 0 && offset < frameBufferPos) {
+            System.arraycopy(frameBuffer, offset, frameBuffer, 0, frameBufferPos - offset);
+            frameBufferPos -= offset;
+        } else if (offset >= frameBufferPos) {
+            frameBufferPos = 0;
+        }
+    }
+
+    private void decodeAACFrame(byte[] data, int offset, ADTSParser.ADTSFrame frame) {
+        if (decoder == null) {
+            return;
+        }
+
+        try {
+            // Get input buffer from decoder
+            int inputBufferIndex = decoder.dequeueInputBuffer(10000);
+            if (inputBufferIndex >= 0) {
+                ByteBuffer inputBuffer = decoder.getInputBuffer(inputBufferIndex);
+                if (inputBuffer != null) {
+                    inputBuffer.clear();
+
+                    // Copy AAC payload (without ADTS header) to input buffer
+                    int payloadOffset = offset + 7;  // ADTS header is 7 bytes
+                    int payloadLength = frame.getPayloadLength();
+
+                    inputBuffer.put(data, payloadOffset, payloadLength);
+
+                    // Queue input buffer for decoding
+                    decoder.queueInputBuffer(inputBufferIndex, 0, payloadLength, 0, 0);
+                }
+            }
+
+            // Get decoded output
+            MediaCodec.BufferInfo bufferInfo = new MediaCodec.BufferInfo();
+            int outputBufferIndex = decoder.dequeueOutputBuffer(bufferInfo, 10000);
+
+            while (outputBufferIndex >= 0) {
+                ByteBuffer outputBuffer = decoder.getOutputBuffer(outputBufferIndex);
+                if (outputBuffer != null && bufferInfo.size > 0) {
+                    // Get PCM data
+                    byte[] pcmData = new byte[bufferInfo.size];
+                    outputBuffer.get(pcmData);
+
+                    // TODO: Apply audio effects (bass/treble/volume)
+
+                    // Play PCM data through AudioTrack
+                    if (audioTrack != null) {
+                        audioTrack.write(pcmData, 0, pcmData.length);
+                    }
+                }
+
+                decoder.releaseOutputBuffer(outputBufferIndex, false);
+                outputBufferIndex = decoder.dequeueOutputBuffer(bufferInfo, 0);
+            }
+
+        } catch (Exception e) {
+            Log.e(TAG, "Error decoding AAC frame", e);
+        }
     }
 
     private void cleanupAudioComponents() {
