@@ -193,7 +193,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        viewModel.updateServiceRunning(AudioCaptureService.isRunning)
+        val isRunning = AudioCaptureService.isRunning || AudioPlaybackService.isRunning
+        viewModel.updateServiceRunning(isRunning)
     }
 
     private fun startStopService(isServiceRunning: Boolean, mode: StreamMode) {

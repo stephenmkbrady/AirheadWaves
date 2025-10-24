@@ -44,8 +44,10 @@ public class AudioPlaybackService extends Service {
     private static final String CHANNEL_ID = "AudioPlaybackChannel";
     private static final int NOTIFICATION_ID = 2;
 
+    public static boolean isRunning = false;
+
     // Service state
-    private final AtomicBoolean isRunning = new AtomicBoolean(false);
+    private final AtomicBoolean serverRunning = new AtomicBoolean(false);
     private ServerSocket serverSocket;
     private Socket clientSocket;
     private Thread serverThread;
@@ -65,9 +67,15 @@ public class AudioPlaybackService extends Service {
     private int detectedChannels = 2;
     private String connectedClientIP;
 
+    // ViewModel for UI updates
+    private MainViewModel viewModel;
+
     @Override
     public void onCreate() {
         super.onCreate();
+        isRunning = true;
+        viewModel = MainViewModel.Companion.getInstance(getApplication());
+        viewModel.updateServiceRunning(true);
         createNotificationChannel();
     }
 
@@ -120,7 +128,7 @@ public class AudioPlaybackService extends Service {
     }
 
     private void startReceiving(ReceiveProfile profile) {
-        if (isRunning.getAndSet(true)) {
+        if (serverRunning.getAndSet(true)) {
             return;  // Already running
         }
 
@@ -131,8 +139,11 @@ public class AudioPlaybackService extends Service {
         serverThread = new Thread(this::runTCPServer);
         serverThread.start();
 
-        updateNotification("Listening on port " + (profile != null ? profile.getListenPort() : 8888));
-        broadcastStatus("Listening on port " + (profile != null ? profile.getListenPort() : 8888));
+        String listeningMessage = "Listening on port " + (profile != null ? profile.getListenPort() : 8888);
+        updateNotification(listeningMessage);
+        if (viewModel != null) {
+            viewModel.updateStats(listeningMessage);
+        }
     }
 
     private void runTCPServer() {
@@ -141,15 +152,18 @@ public class AudioPlaybackService extends Service {
             serverSocket = new ServerSocket(port);
             Log.i(TAG, "TCP Server listening on port " + port);
 
-            while (isRunning.get() && !serverSocket.isClosed()) {
+            while (serverRunning.get() && !serverSocket.isClosed()) {
                 try {
                     // Accept incoming connection (blocking)
                     clientSocket = serverSocket.accept();
                     connectedClientIP = clientSocket.getInetAddress().getHostAddress();
 
                     Log.i(TAG, "Client connected: " + connectedClientIP);
-                    updateNotification("Connected: " + connectedClientIP);
-                    broadcastStatus("Connected: " + connectedClientIP);
+                    String connectedMessage = "Connected: streaming from " + connectedClientIP;
+                    updateNotification(connectedMessage);
+                    if (viewModel != null) {
+                        viewModel.updateStats(connectedMessage);
+                    }
 
                     // Check access control
                     if (!isClientAllowed(connectedClientIP)) {
@@ -166,7 +180,7 @@ public class AudioPlaybackService extends Service {
                     playbackThread.join();
 
                 } catch (IOException e) {
-                    if (isRunning.get()) {
+                    if (serverRunning.get()) {
                         Log.e(TAG, "Error accepting connection", e);
                     }
                 } catch (InterruptedException e) {
@@ -176,7 +190,10 @@ public class AudioPlaybackService extends Service {
 
         } catch (IOException e) {
             Log.e(TAG, "Failed to create server socket", e);
-            broadcastStatus("Error: " + e.getMessage());
+            String errorMessage = "Error: " + e.getMessage();
+            if (viewModel != null) {
+                viewModel.updateStats(errorMessage);
+            }
         } finally {
             cleanup();
         }
@@ -211,7 +228,7 @@ public class AudioPlaybackService extends Service {
 
             // Read and decode AAC frames
             byte[] buffer = new byte[8192];
-            while (isRunning.get() && !clientSocket.isClosed()) {
+            while (serverRunning.get() && !clientSocket.isClosed()) {
                 int bytesRead = inputStream.read(buffer);
                 if (bytesRead == -1) {
                     break;  // End of stream
@@ -223,7 +240,7 @@ public class AudioPlaybackService extends Service {
             }
 
         } catch (IOException e) {
-            if (isRunning.get()) {
+            if (serverRunning.get()) {
                 Log.e(TAG, "Playback error", e);
             }
         } finally {
@@ -236,8 +253,11 @@ public class AudioPlaybackService extends Service {
                 Log.e(TAG, "Error closing client socket", e);
             }
 
-            updateNotification("Listening on port " + (profile != null ? profile.getListenPort() : 8888));
-            broadcastStatus("Listening on port " + (profile != null ? profile.getListenPort() : 8888));
+            String listeningMessage = "Listening on port " + (profile != null ? profile.getListenPort() : 8888);
+            updateNotification(listeningMessage);
+            if (viewModel != null) {
+                viewModel.updateStats(listeningMessage);
+            }
         }
     }
 
@@ -489,7 +509,7 @@ public class AudioPlaybackService extends Service {
     }
 
     private void stopReceiving() {
-        isRunning.set(false);
+        serverRunning.set(false);
 
         try {
             if (clientSocket != null) {
@@ -557,12 +577,6 @@ public class AudioPlaybackService extends Service {
         }
     }
 
-    private void broadcastStatus(String status) {
-        Intent intent = new Intent("AUDIO_PLAYBACK_STATUS");
-        intent.putExtra("status", status);
-        sendBroadcast(intent);
-    }
-
     @Override
     public IBinder onBind(Intent intent) {
         return null;
@@ -571,6 +585,15 @@ public class AudioPlaybackService extends Service {
     @Override
     public void onDestroy() {
         stopReceiving();
+        isRunning = false;
+
+        // Update ViewModel to reflect service stopped
+        if (viewModel != null) {
+            viewModel.updateStats("Not Connected");
+            viewModel.updateAudioLevel(0.0f);
+            viewModel.updateServiceRunning(false);
+        }
+
         super.onDestroy();
     }
 }
