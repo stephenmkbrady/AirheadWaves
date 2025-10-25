@@ -802,11 +802,13 @@ fun ReceiveProfileEditor(
     var treble by remember { mutableFloatStateOf(profile.treble) }
     var volume by remember { mutableFloatStateOf(profile.volume) }
     var bufferSize by remember { mutableStateOf(profile.bufferSize) }
+    var outputDevice by remember { mutableStateOf(profile.outputDevice) }
     var allowUnknownTransmitters by remember { mutableStateOf(profile.allowUnknownTransmitters) }
     var allowedIPs by remember { mutableStateOf(profile.allowedTransmitterIPs.joinToString("\n")) }
+    var autoReconnect by remember { mutableStateOf(profile.autoReconnect) }
     var isExpanded by remember { mutableStateOf(false) }
 
-    LaunchedEffect(name, listenPort, bass, treble, volume, bufferSize, allowUnknownTransmitters, allowedIPs) {
+    LaunchedEffect(name, listenPort, bass, treble, volume, bufferSize, outputDevice, allowUnknownTransmitters, allowedIPs, autoReconnect) {
         val ipList = if (allowedIPs.isBlank()) emptyList() else allowedIPs.split("\n").map { it.trim() }.filter { it.isNotEmpty() }
         onProfileChange(profile.copy(
             name = name,
@@ -815,8 +817,10 @@ fun ReceiveProfileEditor(
             treble = treble,
             volume = volume,
             bufferSize = bufferSize,
+            outputDevice = outputDevice,
             allowUnknownTransmitters = allowUnknownTransmitters,
-            allowedTransmitterIPs = ipList
+            allowedTransmitterIPs = ipList,
+            autoReconnect = autoReconnect
         ))
     }
 
@@ -942,6 +946,56 @@ fun ReceiveProfileEditor(
                     }
                 }
 
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // Output Device dropdown
+                var outputDeviceExpanded by remember { mutableStateOf(false) }
+                ExposedDropdownMenuBox(
+                    expanded = outputDeviceExpanded,
+                    onExpandedChange = { outputDeviceExpanded = !outputDeviceExpanded }
+                ) {
+                    OutlinedTextField(
+                        value = when(outputDevice) {
+                            OutputDevice.AUTO -> "Auto (System Default)"
+                            OutputDevice.SPEAKER -> "Speaker"
+                            OutputDevice.HEADPHONES -> "Headphones"
+                        },
+                        onValueChange = {},
+                        readOnly = true,
+                        label = { Text("Output Device") },
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = outputDeviceExpanded) },
+                        modifier = Modifier
+                            .menuAnchor(MenuAnchorType.PrimaryNotEditable)
+                            .fillMaxWidth()
+                    )
+                    ExposedDropdownMenu(
+                        expanded = outputDeviceExpanded,
+                        onDismissRequest = { outputDeviceExpanded = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Auto (System Default)") },
+                            onClick = {
+                                outputDevice = OutputDevice.AUTO
+                                outputDeviceExpanded = false
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Speaker") },
+                            onClick = {
+                                outputDevice = OutputDevice.SPEAKER
+                                outputDeviceExpanded = false
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Headphones") },
+                            onClick = {
+                                outputDevice = OutputDevice.HEADPHONES
+                                outputDeviceExpanded = false
+                            }
+                        )
+                    }
+                }
+
                 Text("Access Control", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 16.dp, bottom = 8.dp))
 
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
@@ -961,6 +1015,26 @@ fun ReceiveProfileEditor(
                         modifier = Modifier.fillMaxWidth(),
                         minLines = 3,
                         maxLines = 6
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+                Text("Error Handling", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 8.dp, bottom = 8.dp))
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Auto-Reconnect", modifier = Modifier.weight(1f))
+                    Switch(
+                        checked = autoReconnect,
+                        onCheckedChange = { autoReconnect = it }
+                    )
+                }
+
+                if (autoReconnect) {
+                    Text(
+                        "Receiver will automatically retry up to ${profile.maxReconnectAttempts} times with ${profile.reconnectDelayMs / 1000}s delay between attempts.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(start = 8.dp, top = 4.dp)
                     )
                 }
             }

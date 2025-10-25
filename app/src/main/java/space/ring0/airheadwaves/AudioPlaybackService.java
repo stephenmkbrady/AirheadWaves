@@ -15,8 +15,11 @@ import android.media.MediaCodec;
 import android.media.MediaCodecInfo;
 import android.media.MediaFormat;
 import android.os.Build;
+import android.os.Handler;
 import android.os.IBinder;
+import android.os.Looper;
 import android.util.Log;
+import android.widget.Toast;
 
 import androidx.core.app.NotificationCompat;
 
@@ -74,6 +77,9 @@ public class AudioPlaybackService extends Service {
     // ViewModel for UI updates
     private MainViewModel viewModel;
 
+    // Handler for Toast notifications on main thread
+    private Handler mainHandler;
+
     @Override
     public void onCreate() {
         super.onCreate();
@@ -81,6 +87,7 @@ public class AudioPlaybackService extends Service {
         viewModel = MainViewModel.Companion.getInstance(getApplication());
         viewModel.updateServiceRunning(true);
         audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+        mainHandler = new Handler(Looper.getMainLooper());
         setupAudioFocusListener();
         createNotificationChannel();
     }
@@ -160,6 +167,80 @@ public class AudioPlaybackService extends Service {
         }
     }
 
+    private void setPreferredOutputDevice() {
+        if (audioManager == null || audioTrack == null || profile == null) {
+            return;
+        }
+
+        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.M) {
+            return;
+        }
+
+        android.media.AudioDeviceInfo[] devices = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS);
+        android.media.AudioDeviceInfo preferredDevice = null;
+
+        switch (profile.getOutputDevice()) {
+            case SPEAKER:
+                // Find built-in speaker
+                for (android.media.AudioDeviceInfo device : devices) {
+                    if (device.getType() == android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER) {
+                        preferredDevice = device;
+                        Log.i(TAG, "Routing to built-in speaker: " + device.getProductName());
+                        break;
+                    }
+                }
+                if (preferredDevice == null) {
+                    Log.w(TAG, "Built-in speaker not found, using default routing");
+                }
+                break;
+
+            case HEADPHONES:
+                // Find wired headset/headphones first, then bluetooth
+                for (android.media.AudioDeviceInfo device : devices) {
+                    int type = device.getType();
+                    if (type == android.media.AudioDeviceInfo.TYPE_WIRED_HEADSET ||
+                        type == android.media.AudioDeviceInfo.TYPE_WIRED_HEADPHONES ||
+                        type == android.media.AudioDeviceInfo.TYPE_USB_HEADSET) {
+                        preferredDevice = device;
+                        Log.i(TAG, "Routing to wired headphones: " + device.getProductName());
+                        break;
+                    }
+                }
+                // Fallback to bluetooth if no wired headphones
+                if (preferredDevice == null) {
+                    for (android.media.AudioDeviceInfo device : devices) {
+                        int type = device.getType();
+                        if (type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
+                            type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO) {
+                            preferredDevice = device;
+                            Log.i(TAG, "Routing to bluetooth headphones: " + device.getProductName());
+                            break;
+                        }
+                    }
+                }
+                if (preferredDevice == null) {
+                    Log.w(TAG, "No headphones found, using default routing");
+                }
+                break;
+
+            case AUTO:
+            default:
+                // Use default Android routing
+                Log.i(TAG, "Using automatic device routing");
+                audioTrack.setPreferredDevice(null);
+                return;
+        }
+
+        if (preferredDevice != null) {
+            boolean success = audioTrack.setPreferredDevice(preferredDevice);
+            if (success) {
+                Log.i(TAG, "Successfully set preferred output device");
+            } else {
+                Log.w(TAG, "Failed to set preferred output device");
+            }
+        }
+    }
+
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         if (intent == null) {
@@ -204,7 +285,10 @@ public class AudioPlaybackService extends Service {
             java.util.Collections.emptyList(),
             true,
             null,
-            null
+            null,
+            true,   // autoReconnect
+            2000,   // reconnectDelayMs
+            5       // maxReconnectAttempts
         );
     }
 
@@ -228,6 +312,11 @@ public class AudioPlaybackService extends Service {
     }
 
     private void runTCPServer() {
+        int reconnectAttempts = 0;
+        int maxAttempts = profile != null ? profile.getMaxReconnectAttempts() : 5;
+        int reconnectDelay = profile != null ? profile.getReconnectDelayMs() : 2000;
+        boolean autoReconnect = profile != null ? profile.getAutoReconnect() : true;
+
         try {
             int port = profile != null ? profile.getListenPort() : 8888;
             serverSocket = new ServerSocket(port);
@@ -237,6 +326,7 @@ public class AudioPlaybackService extends Service {
                 try {
                     // Accept incoming connection (blocking)
                     clientSocket = serverSocket.accept();
+                    reconnectAttempts = 0;  // Reset attempts counter on successful connection
 
                     // Configure socket for low latency
                     clientSocket.setTcpNoDelay(true);  // Disable Nagle's algorithm
@@ -268,6 +358,33 @@ public class AudioPlaybackService extends Service {
                 } catch (IOException e) {
                     if (serverRunning.get()) {
                         Log.e(TAG, "Error accepting connection", e);
+
+                        // Implement retry logic if auto-reconnect is enabled
+                        if (autoReconnect && reconnectAttempts < maxAttempts) {
+                            reconnectAttempts++;
+                            String retryMsg = "Connection error. Retry " + reconnectAttempts + "/" + maxAttempts +
+                                            " in " + (reconnectDelay / 1000) + "s...";
+                            Log.i(TAG, retryMsg);
+                            if (viewModel != null) {
+                                viewModel.updateStats(retryMsg);
+                            }
+
+                            try {
+                                Thread.sleep(reconnectDelay);
+                            } catch (InterruptedException ie) {
+                                Log.e(TAG, "Reconnect sleep interrupted", ie);
+                                break;
+                            }
+                        } else if (reconnectAttempts >= maxAttempts) {
+                            // Max retries exceeded
+                            String errorMsg = "Max reconnect attempts (" + maxAttempts + ") exceeded. Stopping.";
+                            Log.e(TAG, errorMsg);
+                            if (viewModel != null) {
+                                viewModel.updateStats(errorMsg);
+                            }
+                            showToast("Failed to connect after " + maxAttempts + " attempts. Receiver stopped.");
+                            break;
+                        }
                     }
                 } catch (InterruptedException e) {
                     Log.e(TAG, "Playback thread interrupted", e);
@@ -276,10 +393,7 @@ public class AudioPlaybackService extends Service {
 
         } catch (IOException e) {
             Log.e(TAG, "Failed to create server socket", e);
-            String errorMessage = "Error: " + e.getMessage();
-            if (viewModel != null) {
-                viewModel.updateStats(errorMessage);
-            }
+            handleServerError(e);
         } finally {
             cleanup();
         }
@@ -328,6 +442,7 @@ public class AudioPlaybackService extends Service {
         } catch (IOException e) {
             if (serverRunning.get()) {
                 Log.e(TAG, "Playback error", e);
+                handlePlaybackError(e);
             }
         } finally {
             cleanupAudioComponents();
@@ -414,10 +529,32 @@ public class AudioPlaybackService extends Service {
             Log.i(TAG, "AudioTrack buffer: target=" + targetBufferMs + "ms, calculated=" +
                   calculatedBufferSize + " bytes, min=" + minBufferSize + " bytes, using=" + bufferSize + " bytes");
 
-            AudioAttributes audioAttributes = new AudioAttributes.Builder()
+            // Configure audio attributes based on profile output device setting
+            AudioAttributes.Builder audioAttributesBuilder = new AudioAttributes.Builder()
                 .setUsage(AudioAttributes.USAGE_MEDIA)
-                .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-                .build();
+                .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC);
+
+            // Add routing flags based on output device preference
+            if (profile != null) {
+                switch (profile.getOutputDevice()) {
+                    case SPEAKER:
+                        // Force speaker output (don't route to headphones)
+                        audioAttributesBuilder.setFlags(AudioAttributes.FLAG_AUDIBILITY_ENFORCED);
+                        Log.i(TAG, "Output device: SPEAKER (forced)");
+                        break;
+                    case HEADPHONES:
+                        // Prefer wired headset/headphones if available
+                        Log.i(TAG, "Output device: HEADPHONES (preferred)");
+                        break;
+                    case AUTO:
+                    default:
+                        // Let Android decide based on what's connected
+                        Log.i(TAG, "Output device: AUTO (system default)");
+                        break;
+                }
+            }
+
+            AudioAttributes audioAttributes = audioAttributesBuilder.build();
 
             AudioFormat audioFormat = new AudioFormat.Builder()
                 .setSampleRate(detectedSampleRate)
@@ -437,6 +574,11 @@ public class AudioPlaybackService extends Service {
                 .setTransferMode(AudioTrack.MODE_STREAM)
                 .setPerformanceMode(performanceMode)
                 .build();
+
+            // Set preferred output device based on profile configuration
+            if (profile != null && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+                setPreferredOutputDevice();
+            }
 
             // Request audio focus before starting playback
             if (!requestAudioFocus()) {
@@ -769,6 +911,127 @@ public class AudioPlaybackService extends Service {
             sb.append(String.format("%02X ", b));
         }
         return sb.toString().trim();
+    }
+
+    /**
+     * Show a Toast notification on the main thread
+     */
+    private void showToast(String message) {
+        if (mainHandler != null) {
+            mainHandler.post(() -> {
+                Toast.makeText(getApplicationContext(), message, Toast.LENGTH_LONG).show();
+            });
+        }
+    }
+
+    /**
+     * Handle playback errors during streaming
+     */
+    private void handlePlaybackError(IOException e) {
+        String errorMessage;
+        String toastMessage;
+        String exceptionMessage = e.getMessage() != null ? e.getMessage().toLowerCase() : "";
+
+        if (exceptionMessage.contains("connection reset") ||
+            exceptionMessage.contains("broken pipe")) {
+            // Transmitter disconnected
+            errorMessage = "Transmitter disconnected";
+            toastMessage = "Transmitter disconnected. Waiting for reconnection...";
+            Log.i(TAG, "Transmitter disconnected, waiting for new connection");
+        } else if (exceptionMessage.contains("timeout") ||
+                   exceptionMessage.contains("timed out")) {
+            // Stream timeout
+            errorMessage = "Stream timeout";
+            toastMessage = "Stream timed out. Try:\n" +
+                          "• Check network stability\n" +
+                          "• Ensure transmitter is still running";
+            Log.e(TAG, "Stream timeout");
+        } else {
+            // Generic playback error
+            errorMessage = "Playback error: " + (e.getMessage() != null ? e.getMessage() : "Unknown");
+            toastMessage = "Playback error occurred. Waiting for reconnection...";
+            Log.e(TAG, "Playback error: " + e.getMessage());
+        }
+
+        // Update UI status
+        if (viewModel != null) {
+            viewModel.updateStats(errorMessage);
+        }
+
+        // Show Toast notification for errors (not for normal disconnects)
+        if (!exceptionMessage.contains("connection reset")) {
+            showToast(toastMessage);
+        }
+    }
+
+    /**
+     * Handle server errors with specific detection and actionable messages
+     */
+    private void handleServerError(IOException e) {
+        String errorMessage;
+        String toastMessage;
+        String exceptionMessage = e.getMessage() != null ? e.getMessage().toLowerCase() : "";
+
+        // Detect specific error types and provide actionable guidance
+        if (exceptionMessage.contains("address already in use") ||
+            exceptionMessage.contains("bind failed") ||
+            e instanceof java.net.BindException) {
+            // Port already in use
+            int port = profile != null ? profile.getListenPort() : 8888;
+            errorMessage = "Port " + port + " is already in use";
+            toastMessage = "Port " + port + " is already in use. Try:\n" +
+                          "• Stop other receiver apps\n" +
+                          "• Change port in profile settings\n" +
+                          "• Restart device if issue persists";
+            Log.e(TAG, "Port already in use: " + port);
+        } else if (exceptionMessage.contains("network is unreachable") ||
+                   exceptionMessage.contains("no route to host")) {
+            // Network connectivity issues
+            errorMessage = "Network unreachable";
+            toastMessage = "Network connection error. Try:\n" +
+                          "• Check WiFi is enabled and connected\n" +
+                          "• Verify you're on the same network as transmitter\n" +
+                          "• Disable VPN if active";
+            Log.e(TAG, "Network unreachable");
+        } else if (exceptionMessage.contains("connection refused")) {
+            // Connection refused (shouldn't happen on server side, but handle it)
+            errorMessage = "Connection refused";
+            toastMessage = "Connection was refused. Try:\n" +
+                          "• Check firewall settings\n" +
+                          "• Verify port is not blocked\n" +
+                          "• Restart the app";
+            Log.e(TAG, "Connection refused");
+        } else if (exceptionMessage.contains("permission denied")) {
+            // Permission issues
+            errorMessage = "Permission denied";
+            toastMessage = "Permission denied. Try:\n" +
+                          "• Grant network permissions in Settings\n" +
+                          "• Reinstall the app if needed";
+            Log.e(TAG, "Permission denied");
+        } else if (exceptionMessage.contains("timeout") ||
+                   exceptionMessage.contains("timed out")) {
+            // Timeout errors
+            errorMessage = "Connection timeout";
+            toastMessage = "Connection timed out. Try:\n" +
+                          "• Check network stability\n" +
+                          "• Move closer to WiFi router\n" +
+                          "• Reduce network congestion";
+            Log.e(TAG, "Connection timeout");
+        } else {
+            // Generic error
+            errorMessage = "Error: " + (e.getMessage() != null ? e.getMessage() : "Unknown error");
+            toastMessage = "Receiver error: " + (e.getMessage() != null ? e.getMessage() : "Unknown") + "\n\n" +
+                          "Try restarting the receiver or checking logs for details.";
+            Log.e(TAG, "Generic server error: " + e.getMessage());
+        }
+
+        // Update UI status
+        if (viewModel != null) {
+            viewModel.updateStats(errorMessage);
+        }
+
+        // Show Toast notification
+        showToast(toastMessage);
     }
 
     private void createNotificationChannel() {

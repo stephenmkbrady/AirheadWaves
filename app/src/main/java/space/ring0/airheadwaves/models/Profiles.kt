@@ -42,7 +42,11 @@ data class ReceiveProfile(
     // Stream configuration
     val autoDetectParameters: Boolean = true,
     val expectedSampleRate: Int? = null,
-    val expectedChannels: Int? = null
+    val expectedChannels: Int? = null,
+    // Error handling and reconnection
+    val autoReconnect: Boolean = true,
+    val reconnectDelayMs: Int = 2000,
+    val maxReconnectAttempts: Int = 5
 )
 
 @Serializable
