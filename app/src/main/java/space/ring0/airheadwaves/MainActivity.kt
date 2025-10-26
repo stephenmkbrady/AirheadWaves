@@ -185,6 +185,11 @@ class MainActivity : ComponentActivity() {
                                 onVisualizationToggle = { viewModel.updateVisualizationEnabled(it) }
                             )
                         }
+                        composable("graph_editor") {
+                            space.ring0.airheadwaves.ui.NodeGraphEditorScreen(
+                                onBack = { navController.popBackStack() }
+                            )
+                        }
                     }
                 }
             }
@@ -500,6 +505,15 @@ fun SettingsScreen(navController: NavController) {
         Spacer(modifier = Modifier.height(32.dp))
         Button(onClick = { navController.navigate("app_settings") }) {
             Text(text = "App Settings")
+        }
+        Spacer(modifier = Modifier.height(32.dp))
+        Text(
+            text = "v3.0 Prototype",
+            style = MaterialTheme.typography.titleMedium,
+            modifier = Modifier.padding(bottom = 8.dp)
+        )
+        Button(onClick = { navController.navigate("graph_editor") }) {
+            Text(text = "Node Graph Editor (Beta)")
         }
     }
 }
