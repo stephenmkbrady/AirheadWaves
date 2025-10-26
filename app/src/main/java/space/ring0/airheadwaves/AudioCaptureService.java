@@ -40,8 +40,7 @@ public class AudioCaptureService extends Service {
     private AudioRecord audioRecord;
     private MediaCodec mediaCodec;
     private Thread captureThread;
-    private String serverIp;
-    private int serverPort;
+    private space.ring0.airheadwaves.models.TransmitProfile profile;
     private int bitrate;
     private int sampleRate;
     private String channelConfig;
@@ -75,11 +74,25 @@ public class AudioCaptureService extends Service {
 
         int resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, -1);
         Intent data = intent.getParcelableExtra(EXTRA_DATA);
-        serverIp = intent.getStringExtra("SERVER_IP");
-        serverPort = intent.getIntExtra("SERVER_PORT", 8888);
-        bitrate = intent.getIntExtra("BITRATE", 128000);
-        sampleRate = intent.getIntExtra("SAMPLE_RATE", 44100);
-        channelConfig = intent.getStringExtra("CHANNEL_CONFIG");
+
+        // Deserialize TransmitProfile from JSON
+        String profileJson = intent.getStringExtra("PROFILE_JSON");
+        if (profileJson != null) {
+            try {
+                profile = ProfileSerializer.deserializeTransmitProfile(profileJson);
+                bitrate = profile.getBitrate();
+                sampleRate = profile.getSampleRate();
+                channelConfig = profile.getChannelConfig();
+            } catch (Exception e) {
+                Log.e(TAG, "Failed to deserialize profile", e);
+                stopSelf();
+                return START_NOT_STICKY;
+            }
+        } else {
+            Log.e(TAG, "No profile provided");
+            stopSelf();
+            return START_NOT_STICKY;
+        }
 
         mediaProjection = mediaProjectionManager.getMediaProjection(resultCode, data);
 
@@ -133,7 +146,14 @@ public class AudioCaptureService extends Service {
     private void setupFilters() {
         bassFilter = new BiquadFilter(sampleRate);
         trebleFilter = new BiquadFilter(sampleRate);
-        // Filters will be initialized with 0dB (no effect) and updated dynamically in applyAudioEffects
+
+        // Initialize filters with profile settings or 0dB (no effect)
+        float bass = profile != null ? profile.getBass() : 0f;
+        float treble = profile != null ? profile.getTreble() : 0f;
+        bassFilter.setLowShelf(bass, 200f);
+        trebleFilter.setHighShelf(treble, 3000f);
+        lastBass = bass;
+        lastTreble = treble;
     }
 
     private void addAdtsHeader(byte[] packet, int packetLen) {
@@ -168,11 +188,10 @@ public class AudioCaptureService extends Service {
         float currentVolume = viewModel.getStreamVolume().getValue();
         float scaledVolume = currentVolume * currentVolume * currentVolume;
 
-        // Read current bass/treble from selected profile for real-time updates
-        ServerProfile selectedProfile = viewModel.getSelectedProfile().getValue();
-        if (selectedProfile != null) {
-            float currentBass = selectedProfile.getBass();
-            float currentTreble = selectedProfile.getTreble();
+        // Read current bass/treble from TransmitProfile for real-time updates
+        if (profile != null) {
+            float currentBass = profile.getBass();
+            float currentTreble = profile.getTreble();
 
             // Update filters if bass or treble changed
             if (currentBass != lastBass || currentTreble != lastTreble) {
@@ -218,11 +237,42 @@ public class AudioCaptureService extends Service {
     }
 
     private void encodeAndStreamAudio() {
-        try (Socket socket = new Socket(serverIp, serverPort)) {
-            viewModel.updateStats("Connected");
+        // Create sockets for all destinations
+        java.util.List<space.ring0.airheadwaves.models.Destination> destinations = profile.getDestinations();
+        java.util.List<Socket> sockets = new java.util.ArrayList<>();
+        java.util.List<String> connected = new java.util.ArrayList<>();
+
+        // Connect to all destinations
+        for (space.ring0.airheadwaves.models.Destination dest : destinations) {
+            try {
+                Socket socket = new Socket(dest.getIpAddress(), dest.getPort());
+
+                // Configure socket for low latency
+                socket.setTcpNoDelay(true);  // Disable Nagle's algorithm
+                socket.setSendBufferSize(8192);  // Small buffer for low latency
+
+                sockets.add(socket);
+                connected.add(dest.getIpAddress() + ":" + dest.getPort());
+                Log.i(TAG, "Connected to " + dest.getIpAddress() + ":" + dest.getPort());
+            } catch (IOException e) {
+                Log.e(TAG, "Failed to connect to " + dest.getIpAddress() + ":" + dest.getPort(), e);
+            }
+        }
+
+        if (sockets.isEmpty()) {
+            viewModel.updateStats("Error: No destinations connected");
+            return;
+        }
+
+        viewModel.updateStats("Connected to " + sockets.size() + " destination(s)");
+
+        try {
             MediaCodec.BufferInfo bufferInfo = new MediaCodec.BufferInfo();
             long lastStatTime = System.currentTimeMillis();
             long bytesSent = 0;
+            long totalBytesRead = 0;
+            long totalBytesEncoded = 0;
+            boolean hasLoggedFirstData = false;
 
             while (!Thread.currentThread().isInterrupted()) {
                 int inputBufferIndex = mediaCodec.dequeueInputBuffer(-1);
@@ -231,9 +281,17 @@ public class AudioCaptureService extends Service {
                     inputBuffer.clear();
                     int read = audioRecord.read(inputBuffer, 2 * 1024);
                     if (read > 0) {
+                        totalBytesRead += read;
+                        if (!hasLoggedFirstData) {
+                            Log.i(TAG, "First audio data read: " + read + " bytes");
+                            hasLoggedFirstData = true;
+                        }
                         calculateAndBroadcastAudioLevel(inputBuffer, read);
                         applyAudioEffects(inputBuffer, read);
+                        inputBuffer.position(0);  // Reset position after effects
                         mediaCodec.queueInputBuffer(inputBufferIndex, 0, read, 0, 0);
+                    } else if (read < 0) {
+                        Log.e(TAG, "AudioRecord.read error: " + read);
                     }
                 }
 
@@ -241,19 +299,54 @@ public class AudioCaptureService extends Service {
                 while (outputBufferIndex >= 0) {
                     ByteBuffer outputBuffer = mediaCodec.getOutputBuffer(outputBufferIndex);
                     int outPacketSize = bufferInfo.size;
+
+                    if (outPacketSize == 0) {
+                        Log.w(TAG, "MediaCodec produced empty output buffer");
+                        mediaCodec.releaseOutputBuffer(outputBufferIndex, false);
+                        outputBufferIndex = mediaCodec.dequeueOutputBuffer(bufferInfo, 0);
+                        continue;
+                    }
+
                     int outPacketSizeWithHeader = outPacketSize + 7;
                     byte[] outData = new byte[outPacketSizeWithHeader];
 
                     addAdtsHeader(outData, outPacketSizeWithHeader);
-
                     outputBuffer.get(outData, 7, outPacketSize);
 
-                    socket.getOutputStream().write(outData);
+                    totalBytesEncoded += outPacketSize;
+                    if (totalBytesEncoded < 10000) {  // Log first ~10KB
+                        Log.d(TAG, "Encoded AAC packet: " + outPacketSize + " bytes (total: " + totalBytesEncoded + ")");
+                    }
+
+                    // Send to all connected destinations
+                    for (int i = sockets.size() - 1; i >= 0; i--) {
+                        Socket socket = sockets.get(i);
+                        try {
+                            socket.getOutputStream().write(outData);
+                        } catch (IOException e) {
+                            Log.e(TAG, "Failed to send to " + connected.get(i) + ", disconnecting", e);
+                            try {
+                                socket.close();
+                            } catch (IOException ex) {
+                                // Ignore
+                            }
+                            sockets.remove(i);
+                            connected.remove(i);
+                        }
+                    }
+
+                    // Check if all destinations disconnected
+                    if (sockets.isEmpty()) {
+                        Log.e(TAG, "All destinations disconnected");
+                        viewModel.updateStats("Error: All destinations disconnected");
+                        return;
+                    }
+
                     bytesSent += outPacketSizeWithHeader;
 
                     if (System.currentTimeMillis() - lastStatTime > 1000) {
                         long bps = (bytesSent * 8) / ((System.currentTimeMillis() - lastStatTime) / 1000);
-                        viewModel.updateStats("Connected\n" + bps / 1000 + " kbps");
+                        viewModel.updateStats("Connected to " + sockets.size() + " destination(s)\n" + bps / 1000 + " kbps");
                         lastStatTime = System.currentTimeMillis();
                         bytesSent = 0;
                     }
@@ -262,9 +355,18 @@ public class AudioCaptureService extends Service {
                     outputBufferIndex = mediaCodec.dequeueOutputBuffer(bufferInfo, 0);
                 }
             }
-        } catch (IOException e) {
+        } catch (Exception e) {
             Log.e(TAG, "Error while streaming audio", e);
             viewModel.updateStats("Error: " + e.getMessage());
+        } finally {
+            // Close all sockets
+            for (Socket socket : sockets) {
+                try {
+                    socket.close();
+                } catch (IOException e) {
+                    Log.e(TAG, "Error closing socket", e);
+                }
+            }
         }
     }
 
@@ -327,75 +429,5 @@ public class AudioCaptureService extends Service {
     @Override
     public IBinder onBind(Intent intent) {
         return null;
-    }
-}
-
-class BiquadFilter {
-    private float a1, a2, b0, b1, b2;
-    private float x1, x2, y1, y2;
-    private final int sampleRate;
-
-    public BiquadFilter(int sampleRate) {
-        this.sampleRate = sampleRate;
-        b0 = 1.0f;
-        b1 = 0.0f;
-        b2 = 0.0f;
-        a1 = 0.0f;
-        a2 = 0.0f;
-        x1 = 0.0f;
-        x2 = 0.0f;
-        y1 = 0.0f;
-        y2 = 0.0f;
-    }
-
-    public void setLowShelf(float gainDb, float centerFreq) {
-        float q = 0.707f;
-        float A = (float) Math.pow(10, gainDb / 40.0);
-        float w0 = (float) (2.0 * Math.PI * centerFreq / this.sampleRate);
-        float cos_w0 = (float) Math.cos(w0);
-        float alpha = (float) (Math.sin(w0) / (2.0f * q));
-
-        float a0_ = (A + 1) + (A - 1) * cos_w0 + 2 * (float)Math.sqrt(A) * alpha;
-        this.a1 = -2 * ((A - 1) + (A + 1) * cos_w0);
-        this.a2 = (A + 1) + (A - 1) * cos_w0 - 2 * (float)Math.sqrt(A) * alpha;
-        this.b0 = A * ((A + 1) - (A - 1) * cos_w0 + 2 * (float)Math.sqrt(A) * alpha);
-        this.b1 = 2 * A * ((A - 1) - (A + 1) * cos_w0);
-        this.b2 = A * ((A + 1) - (A - 1) * cos_w0 - 2 * (float)Math.sqrt(A) * alpha);
-
-        this.a1 /= a0_;
-        this.a2 /= a0_;
-        this.b0 /= a0_;
-        this.b1 /= a0_;
-        this.b2 /= a0_;
-    }
-
-    public void setHighShelf(float gainDb, float centerFreq) {
-        float q = 0.707f;
-        float A = (float) Math.pow(10, gainDb / 40.0);
-        float w0 = (float) (2.0 * Math.PI * centerFreq / this.sampleRate);
-        float cos_w0 = (float) Math.cos(w0);
-        float alpha = (float) (Math.sin(w0) / (2.0f * q));
-
-        float a0_ = (A + 1) - (A - 1) * cos_w0 + 2 * (float)Math.sqrt(A) * alpha;
-        this.a1 = 2 * ((A - 1) - (A + 1) * cos_w0);
-        this.a2 = (A + 1) - (A - 1) * cos_w0 - 2 * (float)Math.sqrt(A) * alpha;
-        this.b0 = A * ((A + 1) + (A - 1) * cos_w0 + 2 * (float)Math.sqrt(A) * alpha);
-        this.b1 = -2 * A * ((A - 1) + (A + 1) * cos_w0);
-        this.b2 = A * ((A + 1) + (A - 1) * cos_w0 - 2 * (float)Math.sqrt(A) * alpha);
-
-        this.a1 /= a0_;
-        this.a2 /= a0_;
-        this.b0 /= a0_;
-        this.b1 /= a0_;
-        this.b2 /= a0_;
-    }
-
-    public float process(float in) {
-        float out = b0 * in + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
-        x2 = x1;
-        x1 = in;
-        y2 = y1;
-        y1 = out;
-        return out;
     }
 }

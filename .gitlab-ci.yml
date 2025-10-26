@@ -36,7 +36,7 @@ test:
     when: always
     reports:
       junit: app/build/test-results/test*/TEST-*.xml
-  allow_failure: true
+  allow_failure: false
 
 # Job: Build signed release APK (only on tags)
 build_release:

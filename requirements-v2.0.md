@@ -65,9 +65,12 @@ This document covers Phase 1 and Phase 2 of the receive mode implementation:
 - Accepts incoming connections from transmitter devices
 - Handles connection lifecycle (connect, disconnect, reconnect)
 
-**REQ-RCV-002**: The application SHALL support single concurrent connection
-- Only one transmitter can connect at a time (Phase 1)
-- Additional connection attempts are rejected while streaming
+**REQ-RCV-002**: The application SHALL support multiple concurrent connections (Phase 2)
+- Multiple transmitters can connect simultaneously
+- Each connection handled independently
+- Audio from all connections is mixed for playback
+- **Phase 1 Implementation**: Single connection only (validate core functionality)
+- **Backward Compatibility**: Must not break compatibility with existing non-Android receivers
 
 #### 3.1.2 Audio Reception and Decoding
 **REQ-RCV-003**: The application SHALL receive AAC audio with ADTS headers
@@ -79,10 +82,11 @@ This document covers Phase 1 and Phase 2 of the receive mode implementation:
 - Support sample rates: 22050 Hz, 44100 Hz, 48000 Hz
 - Support channel configurations: Mono, Stereo
 
-**REQ-RCV-005**: The application SHALL auto-detect stream parameters from ADTS headers
-- Extract sample rate from ADTS header
-- Extract channel configuration from ADTS header
-- Gracefully handle parameter mismatches
+**REQ-RCV-005**: The application SHALL support stream parameter configuration
+- **Default**: Auto-detect from ADTS headers (enabled by default)
+- **Manual Override**: Per-profile configuration of expected sample rate and channels
+- **Mismatch Handling**: Warn user but continue playback when mismatch detected
+- **Purpose**: Debugging and troubleshooting support
 
 #### 3.1.3 Audio Playback
 **REQ-RCV-006**: The application SHALL play received audio using AudioTrack
@@ -111,16 +115,24 @@ This document covers Phase 1 and Phase 2 of the receive mode implementation:
 - Separate storage/serialization
 - No profile can be both transmit and receive
 
-#### 3.2.2 Transmit Profile Settings (Existing)
+#### 3.2.2 Transmit Profile Settings (Enhanced)
 **REQ-PROF-003**: Transmit profiles SHALL include:
 - Profile name (user-defined)
-- Server IP address (destination)
-- Server port (destination)
+- **Destination Configuration**:
+  - Multiple receiver addresses (IP:Port pairs)
+  - Broadcast to all configured receivers simultaneously
+  - Support for single or multiple destinations
 - Bitrate: 96, 128, 192, 256, 320 kbps
 - Sample rate: 22050, 44100, 48000 Hz
 - Channel configuration: Mono, Stereo
-- Bass adjustment: -15dB to +15dB
-- Treble adjustment: -15dB to +15dB
+- Bass adjustment: -15dB to +15dB (applied before transmission)
+- Treble adjustment: -15dB to +15dB (applied before transmission)
+
+**REQ-PROF-003a**: The application SHALL support multicast transmission
+- Same audio stream sent to multiple receivers simultaneously
+- Each receiver can apply independent bass/treble/volume adjustments
+- Transmitter applies bass/treble before encoding and transmission
+- Receivers can further adjust audio after decoding
 
 #### 3.2.3 Receive Profile Settings (New)
 **REQ-PROF-004**: Receive profiles SHALL include:
@@ -131,11 +143,18 @@ This document covers Phase 1 and Phase 2 of the receive mode implementation:
 - Bass adjustment: -15dB to +15dB (applied to received audio)
 - Treble adjustment: -15dB to +15dB (applied to received audio)
 - Volume control: 0-100%
+- **Access Control**:
+  - Allow unknown transmitters: Yes/No (default: Yes)
+  - Allowed transmitter IP addresses (optional whitelist)
+- **Stream Configuration**:
+  - Auto-detect parameters: Yes/No (default: Yes)
+  - Expected sample rate (manual override when auto-detect disabled)
+  - Expected channel configuration (manual override when auto-detect disabled)
 
-**REQ-PROF-005**: Receive profiles SHALL NOT include:
-- Bitrate (determined by transmitter)
-- Sample rate (auto-detected from stream)
-- Channel configuration (auto-detected from stream)
+**REQ-PROF-005**: Receive profiles SHALL support transmitter identification
+- Identify transmitters by source IP address
+- Whitelist management for known transmitters
+- Default behavior allows any transmitter when whitelist is empty
 
 ### 3.3 Mode Selection
 
@@ -166,6 +185,14 @@ This document covers Phase 1 and Phase 2 of the receive mode implementation:
 **REQ-UI-002**: Profile dropdown SHALL show only profiles for current mode
 - Transmit mode → Show transmit profiles only
 - Receive mode → Show receive profiles only
+
+#### 3.4.2a Device Network Information
+**REQ-UI-002a**: The application SHALL display device network information
+- Show all active network interface IP addresses
+- Display in an easily accessible info view/dialog
+- Include interface type (WiFi, Ethernet, etc.) when available
+- Help users configure receiver IP addresses for transmit profiles
+- Accessible from main screen or settings
 
 #### 3.4.3 Status Display
 **REQ-UI-003**: Status display SHALL show mode-specific information
@@ -326,7 +353,14 @@ data class ReceiveProfile(
     val bufferSize: BufferSize = BufferSize.BALANCED,
     val bass: Float = 0f,
     val treble: Float = 0f,
-    val volume: Float = 1.0f
+    val volume: Float = 1.0f,
+    // Access control
+    val allowUnknownTransmitters: Boolean = true,
+    val allowedTransmitterIPs: List<String> = emptyList(),
+    // Stream configuration
+    val autoDetectParameters: Boolean = true,
+    val expectedSampleRate: Int? = null,  // Only used when autoDetect = false
+    val expectedChannels: Int? = null     // Only used when autoDetect = false
 )
 
 enum class OutputDevice {
@@ -340,6 +374,25 @@ enum class BufferSize(val milliseconds: Int) {
     BALANCED(150),
     SMOOTH(350)
 }
+```
+
+**Transmit Profile Data Model (Updated)**
+```kotlin
+data class TransmitProfile(
+    val id: String,
+    val name: String,
+    val destinations: List<Destination>,  // Multiple receivers
+    val bitrate: Int,
+    val sampleRate: Int,
+    val channels: Int,
+    val bass: Float = 0f,
+    val treble: Float = 0f
+)
+
+data class Destination(
+    val ipAddress: String,
+    val port: Int
+)
 ```
 
 ### 5.2 Modified Components
@@ -366,38 +419,44 @@ enum class BufferSize(val milliseconds: Int) {
 - Echo cancellation
 - Talk-back / intercom functionality
 
-### 6.2 Advanced Features
-- Multiple simultaneous receive streams with mixing
+### 6.2 Advanced Features (v3.0+)
 - Stream recording to file
 - Scheduled streaming (start/stop at specific times)
-- Multi-device synchronization
+- Multi-device synchronization with timestamp alignment
 - Compression settings (beyond AAC)
+- NAT traversal and internet streaming (STUN/TURN)
+- UPnP automatic port forwarding
+- Dynamic DNS integration
+- TLS/SSL encryption for secure streaming
 
-## 7. Open Questions
+## 7. Design Decisions (Resolved)
 
-### 7.1 Network Topology Confirmation
-**QUESTION**: Confirm network architecture for Android-to-Android streaming:
-- **Proposed**: Receiver opens TCP server port, Transmitter connects as client
-- **Current Transmit**: Transmitter connects to external server
-- **Concern**: Does this match user's network setup? (NAT/firewall considerations)
+### 7.1 Network Topology - RESOLVED
+**DECISION**: Receiver opens TCP server port, Transmitter connects as client
+- **Scope**: LAN-based streaming (v2.0)
+- **Firewall**: User-configurable, expected to be handled by user
+- **Complex Networks**: Deferred to v3.0 (NAT traversal, internet streaming, UPnP)
 
-**ACTION REQUIRED**: User confirmation before implementation
+**Multicast Support - RESOLVED**:
+- Single transmitter SHALL broadcast to multiple receivers simultaneously
+- Transmitter profile supports multiple destination IP:Port pairs
+- Each receiver applies independent audio adjustments (bass/treble/volume)
+- Transmitter applies effects before encoding, receivers can further adjust after decoding
 
-### 7.2 Auto-Configuration vs. Manual
-**QUESTION**: Should receive profiles store expected audio parameters?
-- **Option A**: Store expected sample rate/channels, warn if mismatch detected
-- **Option B**: Always auto-detect, don't store these in profile
-- **Recommendation**: Option B (auto-detect only)
+### 7.2 Stream Parameter Configuration - RESOLVED
+**DECISION**: Hybrid approach (configurable with auto-detect default)
+- **Default Behavior**: Auto-detect from ADTS headers (enabled by default)
+- **Manual Override**: Per-profile configuration available for debugging
+- **Mismatch Handling**: Warn user but continue playback
+- **Future**: May be moved to "Advanced Options" in later versions
 
-**ACTION REQUIRED**: User preference
-
-### 7.3 Profile Linking
-**QUESTION**: Should transmit and receive profiles be linked?
-- **Example**: "Living Room Receiver" transmit profile automatically knows to connect to "Living Room Receiver" receive profile's settings
-- **Complexity**: Adds profile relationship management
-- **Benefit**: Easier configuration for typical use cases
-
-**ACTION REQUIRED**: User feedback
+### 7.3 Access Control and Multiple Transmitters - RESOLVED
+**DECISION**: IP-based access control with whitelist support
+- **Identification**: Transmitters identified by source IP address
+- **Default**: "Allow unknown transmitters" enabled (permissive)
+- **Whitelist**: Optional list of allowed transmitter IPs per receive profile
+- **Multiple Transmitters**: Supported (Phase 2) - simultaneous connections with audio mixing
+- **Backward Compatibility**: Must not break compatibility with existing non-Android receivers
 
 ## 8. Implementation Phases
 
