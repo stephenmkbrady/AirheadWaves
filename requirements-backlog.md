@@ -1,7 +1,7 @@
 # AirheadWaves - Advanced Networking Requirements
 
 ## Document Information
-- **Version**: 3.0
+- **Version**: backlog
 - **Date**: 2025-10-24
 - **Status**: Future Planning
 - **Previous Version**: [requirements-v2.0.md](requirements-v2.0.md)

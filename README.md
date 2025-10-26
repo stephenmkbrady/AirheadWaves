@@ -165,7 +165,7 @@ The app uses modern Android development practices with bidirectional audio strea
 
 **Future (v3.0):**
 - Internet streaming with NAT traversal (STUN/TURN)
-- See [requirements-v3.0.md](requirements-v3.0.md) for planned features
+- See [requirements-v3.0.md](requirements-backlog.md) for planned features
 
 ## Contributing
 
