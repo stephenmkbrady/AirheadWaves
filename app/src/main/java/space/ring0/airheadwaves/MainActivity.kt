@@ -820,9 +820,10 @@ fun ReceiveProfileEditor(
     var allowUnknownTransmitters by remember { mutableStateOf(profile.allowUnknownTransmitters) }
     var allowedIPs by remember { mutableStateOf(profile.allowedTransmitterIPs.joinToString("\n")) }
     var autoReconnect by remember { mutableStateOf(profile.autoReconnect) }
+    var remoteConfigMode by remember { mutableStateOf(profile.remoteConfigMode) }
     var isExpanded by remember { mutableStateOf(false) }
 
-    LaunchedEffect(name, listenPort, bass, treble, volume, bufferSize, outputDevice, allowUnknownTransmitters, allowedIPs, autoReconnect) {
+    LaunchedEffect(name, listenPort, bass, treble, volume, bufferSize, outputDevice, allowUnknownTransmitters, allowedIPs, autoReconnect, remoteConfigMode) {
         val ipList = if (allowedIPs.isBlank()) emptyList() else allowedIPs.split("\n").map { it.trim() }.filter { it.isNotEmpty() }
         onProfileChange(profile.copy(
             name = name,
@@ -834,7 +835,8 @@ fun ReceiveProfileEditor(
             outputDevice = outputDevice,
             allowUnknownTransmitters = allowUnknownTransmitters,
             allowedTransmitterIPs = ipList,
-            autoReconnect = autoReconnect
+            autoReconnect = autoReconnect,
+            remoteConfigMode = remoteConfigMode
         ))
     }
 
@@ -1046,6 +1048,26 @@ fun ReceiveProfileEditor(
                 if (autoReconnect) {
                     Text(
                         "Receiver will automatically retry up to ${profile.maxReconnectAttempts} times with ${profile.reconnectDelayMs / 1000}s delay between attempts.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(start = 8.dp, top = 4.dp)
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+                Text("v3.0 Remote Config (Prototype)", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 8.dp, bottom = 8.dp))
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Remote Config Mode", modifier = Modifier.weight(1f))
+                    Switch(
+                        checked = remoteConfigMode,
+                        onCheckedChange = { remoteConfigMode = it }
+                    )
+                }
+
+                if (remoteConfigMode) {
+                    Text(
+                        "Receiver will accept configuration from CNC transmitters via MQTT. Use Node Graph Editor to pair devices.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(start = 8.dp, top = 4.dp)

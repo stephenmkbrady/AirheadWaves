@@ -46,7 +46,9 @@ data class ReceiveProfile(
     // Error handling and reconnection
     val autoReconnect: Boolean = true,
     val reconnectDelayMs: Int = 2000,
-    val maxReconnectAttempts: Int = 5
+    val maxReconnectAttempts: Int = 5,
+    // v3.0 Remote Config Mode
+    val remoteConfigMode: Boolean = false
 )
 
 @Serializable
